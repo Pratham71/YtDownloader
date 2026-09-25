@@ -12,6 +12,7 @@ Download the best resolution and frame rate available for a video, inspect its d
 | **Video** | Highest available resolution and frame rate by default; optional H.264/AAC MP4 mode for broader compatibility |
 | **Audio** | Download and convert to MP3, with an option to keep the video |
 | **Discover** | Show video information, search, and download a search result |
+| **Playlists** | Download every video into a folder named after the playlist, with numbered filenames |
 | **Manage** | Batch download, list files, show storage usage, open the download folder, and clear files |
 
 ## Install
@@ -29,7 +30,7 @@ You can also start the same CLI through `main.py`, for example `uv run python ma
 
 ## Download quality
 
-The default `download`, `grab`, and `batch` commands choose the **highest resolution available**, then the highest frame rate at that resolution. If the source offers 1080p at 30 or 60 fps, that quality is eligible; a lower-resolution source cannot be made 1080p. The final file is MP4 when its video and audio codecs fit that container, otherwise MKV. Some players may need newer codec support for the highest-quality formats.
+The default `download`, `playlist`, `grab`, and `batch` commands choose the **highest resolution available**, then the highest frame rate at that resolution. If the source offers 1080p at 30 or 60 fps, that quality is eligible; a lower-resolution source cannot be made 1080p. The final file is MP4 when its video and audio codecs fit that container, otherwise MKV. Some players may need newer codec support for the highest-quality formats.
 
 Add `--compatible` to prefer H.264 video and AAC audio in an MP4. This can select a lower resolution than the default when YouTube does not provide the highest resolution in H.264.
 
@@ -38,17 +39,30 @@ uv run ytdl download "https://www.youtube.com/watch?v=VIDEO_ID"
 uv run ytdl download "https://www.youtube.com/watch?v=VIDEO_ID" --compatible
 ```
 
-The completed download shows the selected resolution and frame rate. Downloading the same URL again with the same filename may reuse the existing file; use `-o` with a new name when switching quality modes.
+The completed video download shows the selected resolution and frame rate. Downloading the same URL again with the same filename may reuse the existing file; use `-o` with a new name when switching quality modes.
+
+## Download a playlist
+
+Pass a YouTube playlist link to `playlist`. The app downloads its videos in order into `downloads/<playlist name>/`, with names such as `001 - Video title.mp4`. Invalid folder characters are replaced for your operating system. You can choose another base folder with `--dir`.
+
+```powershell
+uv run ytdl playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID"
+uv run ytdl playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID" --compatible
+```
+
+Unavailable videos are skipped so the rest of the playlist can finish. The `list`, `storage`, and `clear` commands include downloaded playlist videos.
 
 ## All CLI commands
 
-Replace `URL` with a YouTube video link and `WORDS` with search terms. Commands below run from the repository folder.
+Replace `URL` with a YouTube video link, `PLAYLIST_URL` with a playlist link, and `WORDS` with search terms. Commands below run from the repository folder.
 
 | Command | What it does |
 | --- | --- |
 | `uv run ytdl download "URL"` | Download the highest available video quality with audio |
 | `uv run ytdl download "URL" -o "my-video.mp4"` | Choose an output name; the extension follows the actual container |
 | `uv run ytdl download "URL" --compatible` | Prefer an H.264/AAC MP4 |
+| `uv run ytdl playlist "PLAYLIST_URL"` | Download the whole playlist into its own named folder |
+| `uv run ytdl playlist "PLAYLIST_URL" --compatible` | Download the playlist as compatible MP4 files |
 | `uv run ytdl audio "URL"` | Download and convert to MP3; remove the temporary video |
 | `uv run ytdl audio "URL" --keep-video` | Also keep the video used for conversion |
 | `uv run ytdl info "URL"` | Show title, channel, duration, views, and URL |

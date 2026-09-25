@@ -100,6 +100,24 @@ class YTDownloader:
             "js_runtimes": {"deno": {}, "node": {}},
         }
 
+    @classmethod
+    def _video_options(cls, compatible: bool) -> dict:
+        options = cls._ydl_options()
+        options.update(
+            {
+                "format": (
+                    "bv[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
+                    "b[vcodec^=avc1][ext=mp4]"
+                    if compatible else "bv+ba/b"
+                ),
+                "merge_output_format": "mp4" if compatible else "mp4/mkv",
+            }
+        )
+        if not compatible:
+            options["format_sort"] = ["res", "fps"]
+            options["format_sort_force"] = True
+        return options
+
     # ========================================================
     # VIDEO INFO
     # ========================================================
@@ -182,23 +200,14 @@ class YTDownloader:
         else:
             output_name = "%(title).200B.%(ext)s"
 
-        options = self._ydl_options()
+        options = self._video_options(compatible)
         options.update(
             {
-                "format": (
-                    "bv[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
-                    "b[vcodec^=avc1][ext=mp4]"
-                    if compatible else "bv+ba/b"
-                ),
-                "merge_output_format": "mp4" if compatible else "mp4/mkv",
                 "outtmpl": str(self.download_dir / output_name),
                 "progress_hooks": [],
                 "noprogress": True,
             }
         )
-        if not compatible:
-            options["format_sort"] = ["res", "fps"]
-            options["format_sort_force"] = True
 
         with Progress(
             TextColumn("[bold cyan]{task.description}"),
@@ -273,6 +282,54 @@ class YTDownloader:
         )
 
         return path
+
+    def download_playlist(
+        self,
+        url: str | None = None,
+        compatible: bool = False,
+    ) -> Path:
+        final_url = self._require_url(url)
+        metadata_options = self._ydl_options()
+        metadata_options.update({"noplaylist": False, "extract_flat": "in_playlist"})
+        with YoutubeDL(metadata_options) as ydl:
+            metadata = ydl.extract_info(final_url, download=False)
+
+        if not metadata or metadata.get("_type") != "playlist":
+            raise ValueError("The URL does not contain a playlist.")
+
+        title = sanitize_filename(metadata.get("title") or metadata.get("id") or "Playlist")
+        title = title.strip(" .") or "Playlist"
+        folder = self.download_dir / title
+        folder.mkdir(parents=True, exist_ok=True)
+        output_template = (
+            str(folder).replace("%", "%%")
+            + os.sep
+            + "%(playlist_index)03d - %(title).200B.%(ext)s"
+        )
+
+        options = self._video_options(compatible)
+        options.update(
+            {
+                "noplaylist": False,
+                "ignoreerrors": True,
+                "quiet": False,
+                "outtmpl": output_template,
+            }
+        )
+
+        console.print(f"[cyan]Downloading playlist:[/cyan] [bold]{title}[/bold]")
+        with YoutubeDL(options) as ydl:
+            ydl.extract_info(final_url, download=True)
+
+        count = sum(
+            1 for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in self.VIDEO_EXTENSIONS
+        )
+        if not count:
+            raise RuntimeError("No videos were downloaded from this playlist.")
+
+        console.print(f"[green]Playlist saved:[/green] {folder} ({count} videos)")
+        return folder
 
     # ========================================================
     # AUDIO CONVERSION
@@ -450,7 +507,7 @@ class YTDownloader:
     ) -> list[Path]:
         return sorted(
             path
-            for path in self.download_dir.iterdir()
+            for path in self.download_dir.rglob("*")
             if (path.is_file() and path.suffix.lower() in self.VIDEO_EXTENSIONS)
         )
 
@@ -499,7 +556,7 @@ class YTDownloader:
             table.add_row(
                 str(index),
                 media_type,
-                path.name,
+                str(path.relative_to(self.download_dir)),
                 format_size(path.stat().st_size),
             )
 
@@ -564,7 +621,15 @@ class YTDownloader:
         for path in files:
             path.unlink()
 
-        console.print((f"[green]✓ Deleted {len(files)} files[/green]"))
+            parent = path.parent
+            while parent != self.download_dir and parent != self.audio_dir:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+
+        console.print((f"[green]Deleted {len(files)} files[/green]"))
 
     # ========================================================
     # OPEN DOWNLOAD FOLDER

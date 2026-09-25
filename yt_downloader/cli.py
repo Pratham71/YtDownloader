@@ -52,6 +52,17 @@ def create_parser() -> argparse.ArgumentParser:
         help="Prefer H.264 video and AAC audio in MP4",
     )
 
+    playlist = subparsers.add_parser(
+        "playlist",
+        help="Download every video in a playlist into a named folder",
+    )
+    playlist.add_argument("url", help="YouTube playlist URL")
+    playlist.add_argument(
+        "--compatible",
+        action="store_true",
+        help="Prefer H.264 video and AAC audio in MP4",
+    )
+
     # ========================================================
     # AUDIO
     # ========================================================
@@ -232,6 +243,9 @@ def run_cli() -> None:
                     filename=args.output,
                     compatible=args.compatible,
                 )
+
+            case "playlist":
+                downloader.download_playlist(args.url, compatible=args.compatible)
 
             case "audio":
                 downloader.download_mp3(
