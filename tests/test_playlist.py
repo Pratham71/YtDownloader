@@ -60,7 +60,7 @@ class PlaylistTest(unittest.TestCase):
     def test_playlist_command_accepts_compatibility_mode(self):
         args = create_parser().parse_args(["playlist", "https://www.youtube.com/playlist?list=example", "--compatible"])
         self.assertEqual(args.command, "playlist")
-        self.assertTrue(args.compatible)
+        self.assertEqual(args.quality_override, "compatible")
 
 
 if __name__ == "__main__":
