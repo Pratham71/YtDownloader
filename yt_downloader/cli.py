@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -269,6 +270,12 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def run_cli(argv: list[str] | None = None) -> None:
+    # Some Windows terminals use cp1252. Replace unsupported glyphs rather
+    # than failing after a download has already completed.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
     parser = create_parser()
 
     args = parser.parse_args(argv)

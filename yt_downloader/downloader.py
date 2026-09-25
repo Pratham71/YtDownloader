@@ -253,13 +253,13 @@ class YTDownloader:
         fps = data.get("fps")
         quality = f"{height}p" if height else "Unknown resolution"
         if fps:
-            quality += f" • {fps} fps"
+            quality += f" | {fps} fps"
 
         console.print(
             Panel.fit(
                 (
                     f"[bold]{info.title}[/bold]\n"
-                    f"[dim]{info.author} • {info.duration} • "
+                    f"[dim]{info.author} | {info.duration} | "
                     f"{info.readable_views} views[/dim]\n"
                     f"[cyan]{quality}[/cyan]"
                 ),
@@ -272,7 +272,7 @@ class YTDownloader:
             Panel.fit(
                 (
                     "[green bold]"
-                    "✓ Download complete"
+                    "Download complete"
                     "[/green bold]\n"
                     f"{path.name}\n"
                     f"[dim]{elapsed:.2f}s[/dim]"
@@ -379,7 +379,7 @@ class YTDownloader:
             Panel.fit(
                 (
                     "[green bold]"
-                    "✓ MP3 conversion complete"
+                    "MP3 conversion complete"
                     "[/green bold]\n"
                     f"{output_path.name}\n"
                     f"[dim]{elapsed:.2f}s[/dim]"
@@ -684,7 +684,7 @@ class YTDownloader:
                 downloaded.append(path)
 
             except Exception as exc:
-                console.print((f"[red]✗ {exc}[/red]"))
+                console.print((f"[red]Failed: {exc}[/red]"))
 
                 if not continue_on_error:
                     raise

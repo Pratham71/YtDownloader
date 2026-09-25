@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from unittest.mock import patch
 
 from yt_downloader.cli import create_parser, run_cli
 from yt_downloader.config import Settings, config_path, load_settings, save_settings
+from yt_downloader.models import VideoInfo
 
 
 class SettingsTest(unittest.TestCase):
@@ -48,6 +50,20 @@ class SettingsTest(unittest.TestCase):
 class ConfigCliTest(unittest.TestCase):
     def test_help_uses_app_command_name(self):
         self.assertEqual(create_parser().prog, "yt-downloader")
+
+    def test_info_survives_windows_legacy_output_encoding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            info = VideoInfo("東京", "Channel", 19, 10, "https://example.com/video")
+            with io.TextIOWrapper(io.BytesIO(), encoding="cp1252") as output:
+                with (
+                    patch.dict(os.environ, {"YT_DOWNLOADER_CONFIG_FILE": str(path)}),
+                    patch("sys.stdout", output),
+                    patch("yt_downloader.downloader.YTDownloader.info", return_value=info),
+                ):
+                    run_cli(["--dir", str(Path(directory) / "videos"), "info", info.url])
+                output.flush()
+                self.assertIn(b"Channel", output.buffer.getvalue())
 
     def test_saved_defaults_apply_and_one_run_overrides_work(self):
         with tempfile.TemporaryDirectory() as directory:
