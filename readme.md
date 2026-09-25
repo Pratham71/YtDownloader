@@ -8,10 +8,10 @@ Download the best resolution and frame rate available for a video, inspect its d
 
 | | |
 | --- | --- |
-| **Video** | Highest available resolution and frame rate by default; optional H.264/AAC MP4 mode for broader compatibility |
+| **Video** | Highest available resolution and frame rate by default; optional H.264/AAC MP4 mode or a height limit |
 | **Audio** | Download and convert to MP3, with an option to keep the video |
 | **Discover** | Show video information, search, and download a search result |
-| **Playlists** | Download every video into a folder named after the playlist, with numbered filenames |
+| **Playlists** | Download every video into a named folder with numbered filenames, or choose the first N entries |
 | **Manage** | Batch download, list files, show storage usage, open the download folder, and clear files |
 
 ## Install
@@ -43,9 +43,10 @@ Add `--compatible` to prefer H.264 video and AAC audio in an MP4. This can selec
 ```powershell
 uv run yt-downloader download "https://www.youtube.com/watch?v=VIDEO_ID"
 uv run yt-downloader download "https://www.youtube.com/watch?v=VIDEO_ID" --compatible
+uv run yt-downloader download "https://www.youtube.com/watch?v=VIDEO_ID" --max-height 1080
 ```
 
-The completed video download shows the selected resolution and frame rate. Downloading the same URL again with the same filename may reuse the existing file; use `-o` with a new name when switching quality modes.
+`--max-height` is an optional ceiling, not a target: it picks the best available format at or below that height. It can be combined with `--compatible` or `--best`. If the source has no matching format below the ceiling, the download fails. The completed video download shows the selected resolution and frame rate. Downloading the same URL again with the same filename may reuse the existing file; use `-o` with a new name when switching quality modes.
 
 ## Download a playlist
 
@@ -54,9 +55,10 @@ Pass a YouTube playlist link to `playlist`. The app downloads its videos in orde
 ```powershell
 uv run yt-downloader playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID"
 uv run yt-downloader playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID" --compatible
+uv run yt-downloader playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID" --first 3 --max-height 1080
 ```
 
-Unavailable videos are skipped so the rest of the playlist can finish. The `list`, `storage`, and `clear` commands include downloaded playlist videos.
+`--first 3` processes the first three playlist entries; omit it to download the whole playlist. Unavailable videos are skipped, so the number of files can be lower than the requested entry count. The `list`, `storage`, and `clear` commands include downloaded playlist videos.
 
 ## Save default settings
 
@@ -82,9 +84,12 @@ Replace `URL` with a YouTube video link, `PLAYLIST_URL` with a playlist link, an
 | `uv run yt-downloader download "URL" -o "my-video.mp4"` | Choose an output name; the extension follows the actual container |
 | `uv run yt-downloader download "URL" --compatible` | Prefer an H.264/AAC MP4 |
 | `uv run yt-downloader download "URL" --best` | Use the highest quality for this run |
+| `uv run yt-downloader download "URL" --max-height 1080` | Pick the best format up to 1080p |
 | `uv run yt-downloader playlist "PLAYLIST_URL"` | Download the whole playlist into its own named folder |
 | `uv run yt-downloader playlist "PLAYLIST_URL" --compatible` | Download the playlist as compatible MP4 files |
 | `uv run yt-downloader playlist "PLAYLIST_URL" --best` | Use the highest quality for this playlist |
+| `uv run yt-downloader playlist "PLAYLIST_URL" --first 3` | Download only the first three entries |
+| `uv run yt-downloader playlist "PLAYLIST_URL" --max-height 1080` | Cap each video's height at 1080p |
 | `uv run yt-downloader audio "URL"` | Download and convert to MP3; remove the temporary video |
 | `uv run yt-downloader audio "URL" --keep-video` | Also keep the video used for conversion |
 | `uv run yt-downloader audio "URL" --delete-video` | Delete the source video even when the saved default keeps it |
@@ -94,9 +99,11 @@ Replace `URL` with a YouTube video link, `PLAYLIST_URL` with a playlist link, an
 | `uv run yt-downloader grab WORDS -i 2` | Download search result number two |
 | `uv run yt-downloader grab WORDS -i 2 --compatible` | Download that result as a compatible MP4 |
 | `uv run yt-downloader grab WORDS -i 2 --best` | Download that result at highest available quality |
+| `uv run yt-downloader grab WORDS -i 2 --max-height 720` | Cap the selected video's height at 720p |
 | `uv run yt-downloader batch "URL1" "URL2"` | Download several videos |
 | `uv run yt-downloader batch "URL1" "URL2" --compatible` | Batch download compatible MP4 files |
 | `uv run yt-downloader batch "URL1" "URL2" --best` | Batch download at highest available quality |
+| `uv run yt-downloader batch "URL1" "URL2" --max-height 1080` | Cap each batch video's height at 1080p |
 | `uv run yt-downloader list` | List downloaded video and audio files |
 | `uv run yt-downloader storage` | Show disk space used by downloads |
 | `uv run yt-downloader open` | Open the downloads folder |
@@ -110,6 +117,27 @@ Replace `URL` with a YouTube video link, `PLAYLIST_URL` with a playlist link, an
 | `uv run yt-downloader config set quality best` | Save `best` quality (or use `compatible`) |
 | `uv run yt-downloader config set keep-video true` | Keep videos after MP3 conversion by default |
 | `uv run yt-downloader config reset` | Remove saved settings and restore built-in defaults |
+
+## Options reference
+
+| Option | Used with | Explanation | Built-in behavior |
+| --- | --- | --- | --- |
+| `--dir PATH` | Before commands that use downloads | Use another download folder for this run; overrides `config set download-dir` | `downloads` when no folder is saved |
+| `-o NAME`, `--output NAME` | `download` | Set the video's filename; the final extension follows the output container | Video title |
+| `--compatible` | `download`, `playlist`, `grab`, `batch` | Prefer H.264 video plus AAC audio in MP4; may select a lower resolution | Follows saved `quality` |
+| `--best` | `download`, `playlist`, `grab`, `batch` | Choose the highest available resolution and frame rate for this run | Follows saved `quality` |
+| `--max-height PIXELS` | `download`, `playlist`, `grab`, `batch` | Limit video height to a positive number, such as `1080`; combines with either quality mode | No height limit |
+| `--first COUNT` | `playlist` | Process the first positive number of playlist entries | Entire playlist |
+| `--keep-video` | `audio` | Keep the downloaded video after MP3 conversion | Follows saved `keep-video` |
+| `--delete-video` | `audio` | Remove the downloaded video after MP3 conversion | Follows saved `keep-video` |
+| `-n N`, `--limit N` | `search` | Show up to N search results | `5` |
+| `-i N`, `--index N` | `grab` | Download the Nth search result, counting from 1 | `1` |
+| `--videos-only` | `clear` | Delete only downloaded video files, including playlist videos | Delete videos and MP3s |
+| `--audio-only` | `clear` | Delete only downloaded MP3 files | Delete videos and MP3s |
+| `-f`, `--force` | `clear` | Skip the deletion confirmation prompt | Ask before deleting |
+| `-h`, `--help` | Any command | Show usage and available arguments | — |
+
+`--compatible` and `--best` are alternatives; pick one per command. `--max-height` and `--first` accept positive whole numbers. Commands such as `info`, `list`, `storage`, and `open` do not have additional command-specific options.
 
 Use `--dir` **before** a command to choose another download folder for one run:
 

@@ -14,6 +14,16 @@ from .downloader import YTDownloader
 console = Console()
 
 
+def positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Enter a positive whole number.") from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError("Enter a positive whole number.")
+    return number
+
+
 def add_quality_options(command: argparse.ArgumentParser) -> None:
     quality = command.add_mutually_exclusive_group()
     quality.add_argument(
@@ -29,6 +39,12 @@ def add_quality_options(command: argparse.ArgumentParser) -> None:
         action="store_const",
         const="best",
         help="Use highest available quality for this run",
+    )
+    command.add_argument(
+        "--max-height",
+        type=positive_int,
+        metavar="PIXELS",
+        help="Limit video height while choosing the best available format",
     )
 
 
@@ -92,6 +108,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
     playlist.add_argument("url", help="YouTube playlist URL")
     add_quality_options(playlist)
+    playlist.add_argument(
+        "--first",
+        type=positive_int,
+        metavar="COUNT",
+        help="Download only the first COUNT playlist entries",
+    )
 
     # ========================================================
     # AUDIO
@@ -311,10 +333,16 @@ def run_cli(argv: list[str] | None = None) -> None:
                     args.url,
                     filename=args.output,
                     compatible=compatible,
+                    max_height=args.max_height,
                 )
 
             case "playlist":
-                downloader.download_playlist(args.url, compatible=compatible)
+                downloader.download_playlist(
+                    args.url,
+                    compatible=compatible,
+                    max_height=args.max_height,
+                    first=args.first,
+                )
 
             case "audio":
                 downloader.download_mp3(
@@ -344,6 +372,7 @@ def run_cli(argv: list[str] | None = None) -> None:
                     query,
                     index=args.index,
                     compatible=compatible,
+                    max_height=args.max_height,
                 )
 
             case "list":
@@ -372,7 +401,11 @@ def run_cli(argv: list[str] | None = None) -> None:
                 downloader.reveal_folder()
 
             case "batch":
-                downloader.download_many(args.urls, compatible=compatible)
+                downloader.download_many(
+                    args.urls,
+                    compatible=compatible,
+                    max_height=args.max_height,
+                )
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")

@@ -101,15 +101,20 @@ class YTDownloader:
         }
 
     @classmethod
-    def _video_options(cls, compatible: bool) -> dict:
+    def _video_options(cls, compatible: bool, max_height: int | None = None) -> dict:
+        height_filter = f"[height<={max_height}]" if max_height is not None else ""
+        if compatible:
+            video_format = (
+                f"bv[vcodec^=avc1][ext=mp4]{height_filter}+ba[ext=m4a]/"
+                f"b[vcodec^=avc1][ext=mp4]{height_filter}"
+            )
+        else:
+            video_format = f"bv{height_filter}+ba/b{height_filter}"
+
         options = cls._ydl_options()
         options.update(
             {
-                "format": (
-                    "bv[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
-                    "b[vcodec^=avc1][ext=mp4]"
-                    if compatible else "bv+ba/b"
-                ),
+                "format": video_format,
                 "merge_output_format": "mp4" if compatible else "mp4/mkv",
             }
         )
@@ -186,6 +191,7 @@ class YTDownloader:
         url: str | None = None,
         filename: str | None = None,
         compatible: bool = False,
+        max_height: int | None = None,
     ) -> Path:
         final_url = self._require_url(url)
 
@@ -200,7 +206,7 @@ class YTDownloader:
         else:
             output_name = "%(title).200B.%(ext)s"
 
-        options = self._video_options(compatible)
+        options = self._video_options(compatible, max_height)
         options.update(
             {
                 "outtmpl": str(self.download_dir / output_name),
@@ -287,6 +293,8 @@ class YTDownloader:
         self,
         url: str | None = None,
         compatible: bool = False,
+        max_height: int | None = None,
+        first: int | None = None,
     ) -> Path:
         final_url = self._require_url(url)
         metadata_options = self._ydl_options()
@@ -307,7 +315,7 @@ class YTDownloader:
             + "%(playlist_index)03d - %(title).200B.%(ext)s"
         )
 
-        options = self._video_options(compatible)
+        options = self._video_options(compatible, max_height)
         options.update(
             {
                 "noplaylist": False,
@@ -316,6 +324,8 @@ class YTDownloader:
                 "outtmpl": output_template,
             }
         )
+        if first is not None:
+            options["playlistend"] = first
 
         console.print(f"[cyan]Downloading playlist:[/cyan] [bold]{title}[/bold]")
         with YoutubeDL(options) as ydl:
@@ -483,6 +493,7 @@ class YTDownloader:
         query: str,
         index: int = 1,
         compatible: bool = False,
+        max_height: int | None = None,
     ) -> Path:
         results = self.search(
             query,
@@ -496,7 +507,9 @@ class YTDownloader:
 
         console.print((f"[cyan]Selected:[/cyan] [bold]{selected['title']}[/bold]"))
 
-        return self.download(selected["url"], compatible=compatible)
+        return self.download(
+            selected["url"], compatible=compatible, max_height=max_height
+        )
 
     # ========================================================
     # DOWNLOADED FILES
@@ -661,6 +674,7 @@ class YTDownloader:
         urls: list[str],
         continue_on_error: bool = True,
         compatible: bool = False,
+        max_height: int | None = None,
     ) -> list[Path]:
         downloaded: list[Path] = []
 
@@ -679,7 +693,9 @@ class YTDownloader:
             console.rule((f"[bold cyan]{index}/{len(urls)}[/bold cyan]"))
 
             try:
-                path = self.download(url, compatible=compatible)
+                path = self.download(
+                    url, compatible=compatible, max_height=max_height
+                )
 
                 downloaded.append(path)
 

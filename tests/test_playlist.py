@@ -62,6 +62,21 @@ class PlaylistTest(unittest.TestCase):
         self.assertEqual(args.command, "playlist")
         self.assertEqual(args.quality_override, "compatible")
 
+    def test_playlist_first_only_limits_download_pass(self):
+        FakeYoutubeDL.calls = []
+        FakeYoutubeDL.title = "My / Playlist"
+        with tempfile.TemporaryDirectory() as directory, patch("yt_downloader.downloader.YoutubeDL", FakeYoutubeDL):
+            YTDownloader(download_dir=directory).download_playlist("https://example.com/list", first=1)
+            self.assertNotIn("playlistend", FakeYoutubeDL.calls[0])
+            self.assertEqual(FakeYoutubeDL.calls[1]["playlistend"], 1)
+
+    def test_height_cap_applies_to_both_quality_modes(self):
+        best = YTDownloader._video_options(compatible=False, max_height=1080)
+        compatible = YTDownloader._video_options(compatible=True, max_height=720)
+        self.assertIn("bv[height<=1080]+ba", best["format"])
+        self.assertIn("b[height<=1080]", best["format"])
+        self.assertIn("bv[vcodec^=avc1][ext=mp4][height<=720]+ba", compatible["format"])
+
 
 if __name__ == "__main__":
     unittest.main()
