@@ -1,4 +1,4 @@
-"""Persistent defaults for the ytdl command."""
+"""Persistent defaults for the yt-downloader command."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class Settings:
 
 
 def config_path() -> Path:
-    override = os.environ.get("YTDL_CONFIG_FILE")
+    override = os.environ.get("YT_DOWNLOADER_CONFIG_FILE")
     if override:
         return Path(override).expanduser()
     if os.name == "nt" and os.environ.get("APPDATA"):

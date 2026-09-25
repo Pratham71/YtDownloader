@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ytdl = "yt_downloader.cli:run_cli"
+yt-downloader = "yt_downloader.cli:run_cli"
 
 [build-system]
 requires = ["hatchling"]

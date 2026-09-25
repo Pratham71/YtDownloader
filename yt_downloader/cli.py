@@ -49,7 +49,7 @@ def update_setting(settings: Settings, key: str, value: str) -> Settings:
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ytdl",
+        prog="yt-downloader",
         description=("A simple and clean YouTube downloader CLI."),
     )
 
