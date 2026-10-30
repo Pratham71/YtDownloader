@@ -13,7 +13,6 @@ from yt_dlp import YoutubeDL
 from yt_dlp.cookies import SUPPORTED_BROWSERS
 
 from rich.console import Console
-from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -29,6 +28,7 @@ from . import cache
 from .models import VideoInfo
 from .system import open_folder, require_ffmpeg
 from .utils import (
+    display,
     ensure_extension,
     format_size,
     sanitize_filename,
@@ -44,7 +44,7 @@ class DownloadCancelled(Exception):
 
 def clean_error(exc: BaseException) -> str:
     """yt-dlp's message without its 'ERROR: ' prefix, safe to print with rich."""
-    return escape(str(exc).removeprefix("ERROR: ").strip())
+    return display(str(exc).removeprefix("ERROR: ").strip())
 
 
 class _Logger:
@@ -58,7 +58,7 @@ class _Logger:
         pass
 
     def warning(self, message: str) -> None:
-        console.print(f"[yellow]Warning:[/yellow] [dim]{escape(message)}[/dim]")
+        console.print(f"[yellow]Warning:[/yellow] [dim]{display(message)}[/dim]")
 
     def error(self, message: str) -> None:
         pass
@@ -404,12 +404,12 @@ class YTDownloader:
 
         table.add_row(
             "Title",
-            escape(info.title),
+            display(info.title),
         )
 
         table.add_row(
             "Channel",
-            escape(info.author),
+            display(info.author),
         )
 
         table.add_row(
@@ -424,7 +424,7 @@ class YTDownloader:
 
         table.add_row(
             "URL",
-            escape(info.url),
+            display(info.url),
         )
 
         console.print(table)
@@ -481,7 +481,7 @@ class YTDownloader:
         for column in ("ID", "Ext", "Resolution", "FPS", "Contents", "Codecs", "Size"):
             table.add_column(column, style="bold cyan" if column == "ID" else None, no_wrap=True)
         for row in rows:
-            table.add_row(*(escape(value) for value in row.values()))
+            table.add_row(*(display(value) for value in row.values()))
 
         console.print(table)
         console.print("[dim]Video-only formats are merged with the best audio automatically.[/dim]")
@@ -525,8 +525,8 @@ class YTDownloader:
         console.print(
             Panel.fit(
                 (
-                    f"[bold]{escape(info.title)}[/bold]\n"
-                    f"[dim]{escape(info.author)} | {info.duration} | "
+                    f"[bold]{display(info.title)}[/bold]\n"
+                    f"[dim]{display(info.author)} | {info.duration} | "
                     f"{info.readable_views} views[/dim]\n"
                     f"[cyan]{self._quality_label(data)}[/cyan]"
                 ),
@@ -541,7 +541,7 @@ class YTDownloader:
                     "[green bold]"
                     "Download complete"
                     "[/green bold]\n"
-                    + "\n".join(escape(path.name) for path in paths)
+                    + "\n".join(display(path.name) for path in paths)
                     + f"\n[dim]{elapsed:.2f}s[/dim]"
                 ),
                 border_style="green",
@@ -593,17 +593,17 @@ class YTDownloader:
                     except Exception as exc:
                         failed += 1
                         progress.console.print(
-                            f"{count} [red]Failed:[/red] {escape(url)}\n[dim]{clean_error(exc)}[/dim]"
+                            f"{count} [red]Failed:[/red] {display(url)}\n[dim]{clean_error(exc)}[/dim]"
                         )
                         continue
                     if data is None:
                         skipped += 1
-                        progress.console.print(f"{count} [dim]Already downloaded: {escape(url)}[/dim]")
+                        progress.console.print(f"{count} [dim]Already downloaded: {display(url)}[/dim]")
                         continue
                     downloaded.extend(paths)
                     for path in paths:
                         progress.console.print(
-                            f"{count} [green]Done:[/green] {escape(path.name)} "
+                            f"{count} [green]Done:[/green] {display(path.name)} "
                             f"[dim]({self._quality_label(data)})[/dim]"
                         )
             except KeyboardInterrupt:
@@ -652,7 +652,7 @@ class YTDownloader:
             )
 
         console.print(
-            f"[cyan]Downloading playlist:[/cyan] [bold]{escape(title)}[/bold] "
+            f"[cyan]Downloading playlist:[/cyan] [bold]{display(title)}[/bold] "
             f"[dim]({len(entries)} videos)[/dim]"
         )
         downloaded, skipped, failed = self._download_entries(
@@ -671,7 +671,7 @@ class YTDownloader:
             summary += f", {skipped} already there"
         if failed:
             summary += f", {failed} failed"
-        console.print(f"[green]Playlist saved:[/green] {escape(str(folder))} ({summary})")
+        console.print(f"[green]Playlist saved:[/green] {display(str(folder))} ({summary})")
         return folder
 
     # ========================================================
@@ -700,7 +700,7 @@ class YTDownloader:
 
         output_path = self.audio_dir / output_name
 
-        console.print((f"\n[cyan]Converting:[/cyan] [bold]{escape(video_path.name)}[/bold]"))
+        console.print((f"\n[cyan]Converting:[/cyan] [bold]{display(video_path.name)}[/bold]"))
 
         start = perf_counter()
 
@@ -738,7 +738,7 @@ class YTDownloader:
                     "[green bold]"
                     "MP3 conversion complete"
                     "[/green bold]\n"
-                    f"{escape(path.name)}\n"
+                    f"{display(path.name)}\n"
                     f"[dim]{elapsed:.2f}s[/dim]"
                 ),
                 border_style="green",
@@ -822,7 +822,7 @@ class YTDownloader:
         )
 
         table = Table(
-            title=f'Search: "{escape(query)}"',
+            title=f'Search: "{display(query)}"',
             border_style="magenta",
         )
 
@@ -842,8 +842,8 @@ class YTDownloader:
         ):
             table.add_row(
                 str(index),
-                escape(video["title"]),
-                escape(video["channel"]),
+                display(video["title"]),
+                display(video["channel"]),
                 video["duration"],
                 video["views"],
             )
@@ -869,7 +869,7 @@ class YTDownloader:
 
         selected = results[index - 1]
 
-        console.print((f"[cyan]Selected:[/cyan] [bold]{escape(selected['title'])}[/bold]"))
+        console.print((f"[cyan]Selected:[/cyan] [bold]{display(selected['title'])}[/bold]"))
 
         return self.download(
             selected["url"], compatible=compatible, max_height=max_height
@@ -934,7 +934,7 @@ class YTDownloader:
             table.add_row(
                 str(index),
                 media_type,
-                escape(str(path.relative_to(self.download_dir))),
+                display(str(path.relative_to(self.download_dir))),
                 format_size(path.stat().st_size),
             )
 

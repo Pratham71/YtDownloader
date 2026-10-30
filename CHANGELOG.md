@@ -24,6 +24,12 @@
 - Audio files saved directly by audio-only sites (`.m4a`, `.opus`, and others) appear in `list`, `storage`, and `clear`.
 - yt-dlp is now at least 2026.10.26 and includes `curl_cffi`, which some sites require.
 
+### Security
+
+- Text from websites (titles, channel names, error messages, warnings) is stripped of terminal control characters before it is printed. A hostile page could otherwise use escape sequences in its title to rewrite the terminal, plant fake links, or replace the clipboard contents in terminals that support OSC 52.
+- Playlist folder names drop control characters and avoid Windows device names such as `CON` and `NUL`.
+- Version numbers returned by the update check are accepted only when they are plain release numbers.
+
 ### Fixed
 
 - Errors were printed twice, and site names such as `[vimeo]` disappeared from messages.
