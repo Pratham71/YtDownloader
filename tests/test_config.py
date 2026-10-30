@@ -76,15 +76,16 @@ class ConfigCliTest(unittest.TestCase):
 
                 with patch("ytdl.cli.YTDownloader") as downloader:
                     run_cli(["download", "https://example.com/video"])
-                    downloader.assert_called_with(download_dir=str(Path(directory) / "videos"))
+                    self.assertEqual(downloader.call_args.kwargs["download_dir"], str(Path(directory) / "videos"))
                     downloader.return_value.download.assert_called_with(
-                        "https://example.com/video", filename=None, compatible=True, max_height=None
+                        "https://example.com/video", filename=None, compatible=True, max_height=None, format_id=None
                     )
 
                     run_cli(["--dir", str(Path(directory) / "other"), "playlist", "https://example.com/list", "--best"])
-                    downloader.assert_called_with(download_dir=str(Path(directory) / "other"))
+                    self.assertEqual(downloader.call_args.kwargs["download_dir"], str(Path(directory) / "other"))
                     downloader.return_value.download_playlist.assert_called_with(
-                        "https://example.com/list", compatible=False, max_height=None, first=None
+                        "https://example.com/list", compatible=False, max_height=None, first=None,
+                        jobs=1, skip_downloaded=True,
                     )
 
                     run_cli(["audio", "https://example.com/audio"])
@@ -110,12 +111,13 @@ class ConfigCliTest(unittest.TestCase):
             ):
                 run_cli(["download", "https://example.com/video", "--max-height", "1080"])
                 downloader.return_value.download.assert_called_with(
-                    "https://example.com/video", filename=None, compatible=False, max_height=1080
+                    "https://example.com/video", filename=None, compatible=False, max_height=1080, format_id=None
                 )
 
                 run_cli(["playlist", "https://example.com/list", "--first", "2", "--max-height", "720"])
                 downloader.return_value.download_playlist.assert_called_with(
-                    "https://example.com/list", compatible=False, max_height=720, first=2
+                    "https://example.com/list", compatible=False, max_height=720, first=2,
+                    jobs=1, skip_downloaded=True,
                 )
 
                 run_cli(["grab", "cats", "--max-height", "480"])
@@ -125,7 +127,8 @@ class ConfigCliTest(unittest.TestCase):
 
                 run_cli(["batch", "https://example.com/video", "--max-height", "360"])
                 downloader.return_value.download_many.assert_called_with(
-                    ["https://example.com/video"], compatible=False, max_height=360
+                    ["https://example.com/video"], compatible=False, max_height=360,
+                    jobs=1, skip_downloaded=True,
                 )
 
     def test_video_limits_require_positive_numbers(self):

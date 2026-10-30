@@ -37,6 +37,10 @@ def installed_version(package: str) -> str:
         return "0.0.0"
 
 
+def current_version() -> str:
+    return installed_version("ytdl")
+
+
 def parse_version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", text.split("+")[0]))
 
@@ -55,7 +59,7 @@ def _fetch(url: str, timeout: float) -> bytes:
     except ImportError:
         pass
     request = urllib.request.Request(
-        url, headers={"User-Agent": f"ytdl/{installed_version('ytdl')}"}
+        url, headers={"User-Agent": f"ytdl/{current_version()}"}
     )
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
         return response.read()
@@ -95,7 +99,7 @@ def _read_state() -> dict:
 
 def _status_from(state: dict) -> UpdateStatus:
     return UpdateStatus(
-        current=installed_version("ytdl"),
+        current=current_version(),
         latest=state.get("latest"),
         yt_dlp_current=installed_version("yt-dlp"),
         yt_dlp_latest=state.get("yt_dlp_latest"),

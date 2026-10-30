@@ -13,8 +13,12 @@ from typing import Literal
 
 APP_NAME = "ytdl"
 LEGACY_APP_NAME = "yt-downloader"
+MAX_JOBS = 8
 DEFAULT_DOWNLOAD_DIR = str(Path("~") / "Downloads" / APP_NAME)
-SETTING_NAMES = {"download_dir", "quality", "keep_video", "check_updates"}
+SETTING_NAMES = {
+    "download_dir", "quality", "keep_video", "check_updates",
+    "cookies_from_browser", "embed_metadata", "jobs",
+}
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,9 @@ class Settings:
     quality: Literal["best", "compatible"] = "best"
     keep_video: bool = False
     check_updates: bool = True
+    cookies_from_browser: str | None = None
+    embed_metadata: bool = True
+    jobs: int = 1
 
     @classmethod
     def from_dict(cls, data: object) -> Settings:
@@ -36,6 +43,9 @@ class Settings:
         quality = data.get("quality", "best")
         keep_video = data.get("keep_video", False)
         check_updates = data.get("check_updates", True)
+        cookies_from_browser = data.get("cookies_from_browser")
+        embed_metadata = data.get("embed_metadata", True)
+        jobs = data.get("jobs", 1)
         if not isinstance(download_dir, str) or not download_dir.strip():
             raise ValueError("download_dir must be a nonempty string.")
         if not isinstance(quality, str) or quality not in {"best", "compatible"}:
@@ -44,11 +54,22 @@ class Settings:
             raise ValueError("keep_video must be true or false.")
         if not isinstance(check_updates, bool):
             raise ValueError("check_updates must be true or false.")
+        if cookies_from_browser is not None and (
+            not isinstance(cookies_from_browser, str) or not cookies_from_browser.strip()
+        ):
+            raise ValueError("cookies_from_browser must be a browser name or null.")
+        if not isinstance(embed_metadata, bool):
+            raise ValueError("embed_metadata must be true or false.")
+        if not isinstance(jobs, int) or isinstance(jobs, bool) or not 1 <= jobs <= MAX_JOBS:
+            raise ValueError(f"jobs must be a whole number from 1 to {MAX_JOBS}.")
         return cls(
             download_dir=download_dir,
             quality=quality,
             keep_video=keep_video,
             check_updates=check_updates,
+            cookies_from_browser=cookies_from_browser,
+            embed_metadata=embed_metadata,
+            jobs=jobs,
         )
 
 
@@ -77,12 +98,16 @@ def config_path() -> Path:
     return _config_override() or _config_base() / APP_NAME / "config.json"
 
 
-def state_path() -> Path:
-    """Where ytdl keeps non-setting state, such as the last update check."""
+def cache_dir() -> Path:
+    """Where ytdl keeps state that is safe to delete: update checks and search results."""
     override = _config_override()
     if override:
-        return override.with_name("update-check.json")
-    return _cache_base() / APP_NAME / "update-check.json"
+        return override.parent
+    return _cache_base() / APP_NAME
+
+
+def state_path() -> Path:
+    return cache_dir() / "update-check.json"
 
 
 def legacy_config_paths() -> list[Path]:

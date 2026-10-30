@@ -1,22 +1,26 @@
 import argparse
 import json
+import re
+import subprocess
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 
-import subprocess
-
+from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from . import system, updater
-from .config import Settings, config_path, load_settings, save_settings
-from .downloader import YTDownloader
+from .config import MAX_JOBS, Settings, config_path, load_settings, save_settings
+from .downloader import YTDownloader, clean_error, parse_browser
 
 
 console = Console()
 error_console = Console(stderr=True)
+
+URL_HELP = "Video URL from YouTube, TikTok, Instagram, X, Reddit, Vimeo, or another supported site"
+LOGIN_HINTS = re.compile(r"log ?in|sign in|cookies|private|rate.?limit|confirm you.re not a bot", re.I)
 
 
 def parse_bool(value: str, name: str) -> bool:
@@ -32,6 +36,13 @@ def positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError("Enter a positive whole number.") from exc
     if number < 1:
         raise argparse.ArgumentTypeError("Enter a positive whole number.")
+    return number
+
+
+def job_count(value: str) -> int:
+    number = positive_int(value)
+    if number > MAX_JOBS:
+        raise argparse.ArgumentTypeError(f"Use at most {MAX_JOBS} parallel downloads.")
     return number
 
 
@@ -57,6 +68,28 @@ def add_quality_options(command: argparse.ArgumentParser) -> None:
         metavar="PIXELS",
         help="Limit video height while choosing the best available format",
     )
+    command.add_argument(
+        "--subs",
+        nargs="?",
+        const="en.*",
+        metavar="LANGS",
+        help="Embed subtitles, e.g. 'en' or 'en,es' (default with no value: English)",
+    )
+
+
+def add_many_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "-j",
+        "--jobs",
+        type=job_count,
+        metavar="N",
+        help=f"Download up to N videos at once (1-{MAX_JOBS}; default: saved jobs setting)",
+    )
+    command.add_argument(
+        "--force",
+        action="store_true",
+        help="Download again even if a video was downloaded here before",
+    )
 
 
 def update_setting(settings: Settings, key: str, value: str) -> Settings:
@@ -72,25 +105,58 @@ def update_setting(settings: Settings, key: str, value: str) -> Settings:
         return replace(settings, keep_video=parse_bool(value, "Keep-video"))
     if key == "check-updates":
         return replace(settings, check_updates=parse_bool(value, "Check-updates"))
+    if key == "embed-metadata":
+        return replace(settings, embed_metadata=parse_bool(value, "Embed-metadata"))
+    if key == "cookies-from-browser":
+        parse_browser(value)
+        return replace(
+            settings, cookies_from_browser=None if value.lower() == "none" else value
+        )
+    if key == "jobs":
+        try:
+            return replace(settings, jobs=job_count(value))
+        except argparse.ArgumentTypeError as exc:
+            raise ValueError(f"Jobs: {exc}") from exc
     raise ValueError(f"Unknown setting: {key}")
 
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ytdl",
-        description=("A simple and clean YouTube downloader CLI."),
+        description=(
+            "Download videos and audio from YouTube, TikTok, Instagram, "
+            "and over a thousand other sites."
+        ),
     )
 
     parser.add_argument(
         "-V",
         "--version",
         action="version",
-        version=f"ytdl {updater.installed_version('ytdl')}",
+        version=f"ytdl {updater.current_version()}",
     )
 
     parser.add_argument(
         "--dir",
         help="Download directory for this run (overrides config)",
+    )
+
+    parser.add_argument(
+        "--cookies-from-browser",
+        metavar="BROWSER[:PROFILE]",
+        help="Use your login from a browser, e.g. chrome, firefox, edge, safari",
+    )
+
+    parser.add_argument(
+        "--cookies",
+        metavar="FILE",
+        help="Use cookies from a Netscape-format cookies.txt file",
+    )
+
+    parser.add_argument(
+        "--no-metadata",
+        action="store_true",
+        help="Do not embed title, channel, chapters, and thumbnail into files",
     )
 
     subparsers = parser.add_subparsers(
@@ -109,7 +175,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     download.add_argument(
         "url",
-        help="YouTube video URL",
+        help=URL_HELP,
     )
 
     download.add_argument(
@@ -120,12 +186,27 @@ def create_parser() -> argparse.ArgumentParser:
 
     add_quality_options(download)
 
+    pick = download.add_mutually_exclusive_group()
+    pick.add_argument(
+        "-f",
+        "--format",
+        dest="format_id",
+        metavar="ID",
+        help="Download a specific format ID from `ytdl formats URL`",
+    )
+    pick.add_argument(
+        "--choose",
+        action="store_true",
+        help="List the available formats and pick one",
+    )
+
     playlist = subparsers.add_parser(
         "playlist",
-        help="Download every video in a playlist into a named folder",
+        help="Download every video in a playlist or channel into a named folder",
     )
-    playlist.add_argument("url", help="YouTube playlist URL")
+    playlist.add_argument("url", help="Playlist, channel, or profile URL")
     add_quality_options(playlist)
+    add_many_options(playlist)
     playlist.add_argument(
         "--first",
         type=positive_int,
@@ -144,7 +225,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     audio.add_argument(
         "url",
-        help="YouTube video URL",
+        help=URL_HELP,
     )
 
     keep_video = audio.add_mutually_exclusive_group()
@@ -164,7 +245,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # ========================================================
-    # INFO
+    # INFO / FORMATS / SITES
     # ========================================================
 
     info = subparsers.add_parser(
@@ -174,8 +255,20 @@ def create_parser() -> argparse.ArgumentParser:
 
     info.add_argument(
         "url",
-        help="YouTube video URL",
+        help=URL_HELP,
     )
+
+    formats = subparsers.add_parser(
+        "formats",
+        help="List the qualities and formats available for a video",
+    )
+    formats.add_argument("url", help=URL_HELP)
+
+    sites = subparsers.add_parser(
+        "sites",
+        help="List supported websites",
+    )
+    sites.add_argument("filter", nargs="?", help="Only show sites whose name contains this text")
 
     # ========================================================
     # SEARCH
@@ -291,11 +384,19 @@ def create_parser() -> argparse.ArgumentParser:
 
     batch.add_argument(
         "urls",
-        nargs="+",
-        help="YouTube URLs",
+        nargs="*",
+        help="Video URLs",
+    )
+
+    batch.add_argument(
+        "-a",
+        "--file",
+        metavar="FILE",
+        help="Read URLs from a text file, one per line ('#' starts a comment)",
     )
 
     add_quality_options(batch)
+    add_many_options(batch)
 
     config = subparsers.add_parser("config", help="Manage saved CLI defaults")
     config_commands = config.add_subparsers(dest="config_command", required=True)
@@ -303,7 +404,11 @@ def create_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("path", help="Show the config file location")
     set_command = config_commands.add_parser("set", help="Save a default value")
     set_command.add_argument(
-        "key", choices=["download-dir", "quality", "keep-video", "check-updates"]
+        "key",
+        choices=[
+            "download-dir", "quality", "keep-video", "check-updates",
+            "cookies-from-browser", "embed-metadata", "jobs",
+        ],
     )
     set_command.add_argument("value")
     config_commands.add_parser("reset", help="Restore all built-in defaults")
@@ -333,6 +438,21 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def make_downloader(args: argparse.Namespace, settings: Settings) -> YTDownloader:
+    return YTDownloader(
+        download_dir=args.dir or settings.download_dir,
+        cookies_from_browser=args.cookies_from_browser or settings.cookies_from_browser,
+        cookie_file=args.cookies,
+        embed_metadata=settings.embed_metadata and not args.no_metadata,
+        subtitles=getattr(args, "subs", None),
+    )
+
+
+def read_url_file(path: str) -> list[str]:
+    lines = Path(path).expanduser().read_text(encoding="utf-8").splitlines()
+    return [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
 
 
 def show_update_status(status: updater.UpdateStatus) -> None:
@@ -388,7 +508,7 @@ def run_doctor(settings: Settings, download_dir: str) -> None:
 
     table.add_row("System", system.platform_label())
     table.add_row("Python", sys.version.split()[0])
-    table.add_row("ytdl", updater.installed_version("ytdl"))
+    table.add_row("ytdl", updater.current_version())
     table.add_row("yt-dlp", updater.installed_version("yt-dlp"))
     table.add_row("Installed with", updater.install_method())
 
@@ -407,6 +527,7 @@ def run_doctor(settings: Settings, download_dir: str) -> None:
     folder = Path(download_dir).expanduser()
     table.add_row("Download folder", str(folder))
     table.add_row("Config file", str(config_path()))
+    table.add_row("Browser cookies", settings.cookies_from_browser or "off")
     table.add_row("Update checks", "on" if settings.check_updates else "off")
     console.print(table)
 
@@ -415,6 +536,29 @@ def run_doctor(settings: Settings, download_dir: str) -> None:
     if problems:
         raise SystemExit(1)
     console.print("[green bold]Everything ytdl needs is installed.[/green bold]")
+
+
+def show_sites(match: str | None) -> None:
+    names = YTDownloader.supported_sites(match)
+    if not names:
+        console.print(f"[yellow]No supported site matches '{match}'.[/yellow]")
+        return
+    console.print(Columns(names, column_first=True, padding=(0, 2)))
+    console.print(
+        f"[dim]{len(names)} sites. Most other pages with an embedded video work too.[/dim]"
+    )
+
+
+def error_message(exc: Exception) -> str:
+    message = clean_error(exc)
+    if LOGIN_HINTS.search(message):
+        message += (
+            "\n\n[yellow]This site may need you to be logged in. Log in with your browser, then run:[/yellow]\n"
+            "  ytdl --cookies-from-browser chrome download URL\n"
+            "[dim]Use firefox, edge, safari, brave, etc. as needed. "
+            "Save it with: ytdl config set cookies-from-browser chrome[/dim]"
+        )
+    return message
 
 
 def run_cli(argv: list[str] | None = None) -> None:
@@ -455,22 +599,30 @@ def run_cli(argv: list[str] | None = None) -> None:
         if args.command == "doctor":
             run_doctor(settings, args.dir or settings.download_dir)
             return
+        if args.command == "sites":
+            show_sites(args.filter)
+            return
 
         if settings.check_updates and not updater.update_checks_disabled():
             update_check = updater.BackgroundCheck()
 
-        downloader = YTDownloader(download_dir=args.dir or settings.download_dir)
+        downloader = make_downloader(args, settings)
         compatible = False
         if args.command in {"download", "playlist", "grab", "batch"}:
             compatible = (args.quality_override or settings.quality) == "compatible"
+        jobs = getattr(args, "jobs", None) or settings.jobs
 
         match args.command:
             case "download":
+                format_id = args.format_id
+                if args.choose:
+                    format_id = downloader.choose_format(args.url)
                 downloader.download(
                     args.url,
                     filename=args.output,
                     compatible=compatible,
                     max_height=args.max_height,
+                    format_id=format_id,
                 )
 
             case "playlist":
@@ -479,6 +631,8 @@ def run_cli(argv: list[str] | None = None) -> None:
                     compatible=compatible,
                     max_height=args.max_height,
                     first=args.first,
+                    jobs=jobs,
+                    skip_downloaded=not args.force,
                 )
 
             case "audio":
@@ -493,6 +647,9 @@ def run_cli(argv: list[str] | None = None) -> None:
 
             case "info":
                 downloader.show_info(args.url)
+
+            case "formats":
+                downloader.show_formats(args.url)
 
             case "search":
                 query = " ".join(args.query)
@@ -538,10 +695,17 @@ def run_cli(argv: list[str] | None = None) -> None:
                 downloader.reveal_folder()
 
             case "batch":
+                urls = list(args.urls)
+                if args.file:
+                    urls += read_url_file(args.file)
+                if not urls:
+                    raise ValueError("Give at least one URL, or a file of URLs with --file.")
                 downloader.download_many(
-                    args.urls,
+                    urls,
                     compatible=compatible,
                     max_height=args.max_height,
+                    jobs=jobs,
+                    skip_downloaded=not args.force,
                 )
 
     except KeyboardInterrupt:
@@ -550,7 +714,7 @@ def run_cli(argv: list[str] | None = None) -> None:
     except Exception as exc:
         console.print(
             Panel.fit(
-                (f"[red bold]Error[/red bold]\n{exc}"),
+                (f"[red bold]Error[/red bold]\n{error_message(exc)}"),
                 border_style="red",
             )
         )

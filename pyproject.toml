@@ -1,6 +1,6 @@
 [project]
 name = "ytdl"
-version = "0.2.0"
+version = "0.3.0"
 description = "A clean, cross-platform YouTube downloader CLI"
 readme = "readme.md"
 license = "MIT"
@@ -13,7 +13,8 @@ classifiers = [
 
 dependencies = [
     "rich",
-    "yt-dlp[default]>=2026.8.19",
+    # curl-cffi lets yt-dlp look like a browser, which TikTok, Vimeo, and others require.
+    "yt-dlp[default,curl-cffi]>=2026.10.26",
 ]
 
 [project.urls]

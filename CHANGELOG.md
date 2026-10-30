@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- Downloads from TikTok, Instagram, X, Reddit, Vimeo, SoundCloud, and the other sites yt-dlp supports, not only YouTube. `ytdl sites [FILTER]` lists them.
+- Multi-video posts, such as Instagram carousels, save every video.
+- `--cookies-from-browser BROWSER[:PROFILE]` and `--cookies FILE` for sites that need a login, plus the `cookies-from-browser` setting. Login errors suggest them.
+- Title, channel, date, chapters, and thumbnail are embedded into videos and MP3s by default. Turn off with `--no-metadata` or the `embed-metadata` setting.
+- `--subs [LANGS]` embeds subtitles, falling back to auto-generated ones.
+- `ytdl formats URL` lists every format; `download -f ID` downloads one and `download --choose` asks which.
+- `batch` and `playlist` download in parallel with `-j N` (up to 8) and the `jobs` setting.
+- `batch` and `playlist` remember finished videos per folder and skip them on the next run; `--force` downloads again.
+- `batch --file FILE` reads URLs from a text file.
+- Search results are cached for an hour, so `grab` downloads the result `search` showed.
+- Ctrl+C stops every running download in a batch or playlist.
+
+### Changed
+
+- Default filenames are `Title [id].ext`, so videos with the same title no longer overwrite each other. Playlist files are `001 - Title [id].ext`. With `-o NAME`, a multi-video post is saved as `NAME - 1.ext`, `NAME - 2.ext`, and so on.
+- `--max-height` and `--compatible` work on sites that do not report a video height or that name H.264 `h264`, such as Instagram and TikTok.
+- Playlist downloads show one progress bar per video and a summary of downloaded, skipped, and failed videos.
+- Audio files saved directly by audio-only sites (`.m4a`, `.opus`, and others) appear in `list`, `storage`, and `clear`.
+- yt-dlp is now at least 2026.10.26 and includes `curl_cffi`, which some sites require.
+
+### Fixed
+
+- Errors were printed twice, and site names such as `[vimeo]` disappeared from messages.
+- Titles and filenames containing square brackets were shown incorrectly in tables.
+
 ## 0.2.0
 
 ### Changed
