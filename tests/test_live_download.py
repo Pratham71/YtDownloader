@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from yt_downloader.downloader import YTDownloader
+from ytdl.downloader import YTDownloader
 
 
 @unittest.skipUnless(os.environ.get("YT_DOWNLOAD_LIVE_TEST") == "1", "requires YouTube access")

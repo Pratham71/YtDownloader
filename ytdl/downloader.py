@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import os
-import shutil
+import subprocess
 from pathlib import Path
 from time import perf_counter
 
-from moviepy import VideoFileClip
 from yt_dlp import YoutubeDL
-from youtubesearchpython import VideosSearch
 
 from rich.console import Console
 from rich.panel import Panel
@@ -22,6 +20,7 @@ from rich.progress import (
 from rich.table import Table
 
 from .models import VideoInfo
+from .system import open_folder, require_ffmpeg
 from .utils import (
     ensure_extension,
     format_size,
@@ -53,7 +52,7 @@ class YTDownloader:
     ):
         self.url = url
 
-        self.download_dir = Path(download_dir)
+        self.download_dir = Path(download_dir).expanduser()
         self.audio_dir = self.download_dir / "mp3"
 
         self.download_dir.mkdir(
@@ -122,6 +121,53 @@ class YTDownloader:
             options["format_sort"] = ["res", "fps"]
             options["format_sort_force"] = True
         return options
+
+    @staticmethod
+    def _download_with_progress(url: str, options: dict) -> tuple[dict, Path, float]:
+        """Run yt-dlp with a progress bar; return its info, the file, and seconds taken."""
+        progress_task = None
+        options = {**options, "noprogress": True, "progress_hooks": []}
+
+        with Progress(
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+
+            def on_progress(status: dict) -> None:
+                nonlocal progress_task
+
+                if status["status"] not in {"downloading", "finished"}:
+                    return
+
+                total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
+                downloaded = status.get("downloaded_bytes") or total
+
+                if progress_task is None:
+                    progress_task = progress.add_task(
+                        "Downloading",
+                        total=total or None,
+                    )
+
+                progress.update(
+                    progress_task,
+                    total=total or None,
+                    completed=downloaded,
+                )
+
+            options["progress_hooks"].append(on_progress)
+            start = perf_counter()
+            with YoutubeDL(options) as ydl:
+                data = ydl.extract_info(url, download=True)
+                downloads = data.get("requested_downloads") or []
+                result = downloads[0].get("filepath") if downloads else None
+                path = Path(result or ydl.prepare_filename(data))
+            elapsed = perf_counter() - start
+
+        return data, path, elapsed
 
     # ========================================================
     # VIDEO INFO
@@ -195,8 +241,6 @@ class YTDownloader:
     ) -> Path:
         final_url = self._require_url(url)
 
-        progress_task = None
-
         if filename:
             filename = sanitize_filename(filename)
             suffix = Path(filename).suffix.lower()
@@ -207,52 +251,8 @@ class YTDownloader:
             output_name = "%(title).200B.%(ext)s"
 
         options = self._video_options(compatible, max_height)
-        options.update(
-            {
-                "outtmpl": str(self.download_dir / output_name),
-                "progress_hooks": [],
-                "noprogress": True,
-            }
-        )
-
-        with Progress(
-            TextColumn("[bold cyan]{task.description}"),
-            BarColumn(),
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
-            console=console,
-        ) as progress:
-
-            def on_progress(status: dict) -> None:
-                nonlocal progress_task
-
-                if status["status"] not in {"downloading", "finished"}:
-                    return
-
-                total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
-                downloaded = status.get("downloaded_bytes") or total
-
-                if progress_task is None:
-                    progress_task = progress.add_task(
-                        "Downloading",
-                        total=total or None,
-                    )
-
-                progress.update(
-                    progress_task,
-                    total=total or None,
-                    completed=downloaded,
-                )
-
-            options["progress_hooks"].append(on_progress)
-            start = perf_counter()
-            with YoutubeDL(options) as ydl:
-                data = ydl.extract_info(final_url, download=True)
-                downloads = data.get("requested_downloads") or []
-                result = downloads[0].get("filepath") if downloads else None
-                path = Path(result or ydl.prepare_filename(data))
-            elapsed = perf_counter() - start
+        options["outtmpl"] = str(self.download_dir / output_name)
+        data, path, elapsed = self._download_with_progress(final_url, options)
 
         info = self._video_info(data, final_url)
         height = data.get("height")
@@ -371,80 +371,113 @@ class YTDownloader:
 
         start = perf_counter()
 
-        with VideoFileClip(str(video_path)) as video:
-            if video.audio is None:
-                raise ValueError("Video does not contain audio.")
-
-            video.audio.write_audiofile(
+        result = subprocess.run(
+            [
+                require_ffmpeg(),
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(video_path),
+                "-vn", "-codec:a", "libmp3lame", "-q:a", "0",
                 str(output_path),
-                logger=None,
-            )
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        if result.returncode != 0:
+            output_path.unlink(missing_ok=True)
+            raise RuntimeError(f"FFmpeg could not convert the video: {result.stderr.strip()}")
 
         elapsed = perf_counter() - start
 
         if delete_video:
             video_path.unlink()
 
+        self._show_mp3_complete(output_path, elapsed)
+
+        return output_path
+
+    @staticmethod
+    def _show_mp3_complete(path: Path, elapsed: float) -> None:
         console.print(
             Panel.fit(
                 (
                     "[green bold]"
                     "MP3 conversion complete"
                     "[/green bold]\n"
-                    f"{output_path.name}\n"
+                    f"{path.name}\n"
                     f"[dim]{elapsed:.2f}s[/dim]"
                 ),
                 border_style="green",
             )
         )
 
-        return output_path
-
     def download_mp3(
         self,
         url: str | None = None,
         delete_video: bool = True,
     ) -> Path:
-        video = self.download(url, compatible=True)
+        if not delete_video:
+            video = self.download(url, compatible=True)
+            return self.to_mp3(video)
 
-        return self.to_mp3(
-            video,
-            delete_video=delete_video,
+        # Without a video to keep, fetch only the audio stream: much smaller and faster.
+        final_url = self._require_url(url)
+        require_ffmpeg()
+        options = self._ydl_options()
+        options.update(
+            {
+                "format": "ba/b",
+                "outtmpl": str(self.audio_dir / "%(title).200B.%(ext)s"),
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "0",
+                    }
+                ],
+            }
         )
+        _, path, elapsed = self._download_with_progress(final_url, options)
+        path = path.with_suffix(".mp3")
+        self._show_mp3_complete(path, elapsed)
+        return path
 
     # ========================================================
     # SEARCH
     # ========================================================
 
-    @staticmethod
+    @classmethod
     def search(
+        cls,
         query: str,
         limit: int = 5,
     ) -> list[dict]:
-        results = VideosSearch(
-            query,
-            limit=limit,
-        ).result()["result"]
+        if limit < 1:
+            raise ValueError("Search limit must be at least 1.")
 
-        return [
-            {
-                "title": result["title"],
-                "channel": result["channel"]["name"],
-                "duration": result.get(
-                    "duration",
-                    "Unknown",
-                ),
-                "views": result.get(
-                    "viewCount",
-                    {},
-                ).get(
-                    "short",
-                    "Unknown",
-                ),
-                "url": result["link"],
-            }
-            for result in results
-        ]
+        options = cls._ydl_options()
+        options["extract_flat"] = True
+        with YoutubeDL(options) as ydl:
+            data = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+
+        results = []
+        for entry in data.get("entries") or []:
+            if not entry:
+                continue
+            url = entry.get("url") or entry.get("webpage_url")
+            if entry.get("id") and not str(url or "").startswith("http"):
+                url = f"https://www.youtube.com/watch?v={entry['id']}"
+            info = cls._video_info(entry, url)
+            results.append(
+                {
+                    "title": info.title,
+                    "channel": entry.get("channel") or info.author,
+                    "duration": info.duration if info.duration_seconds else "Unknown",
+                    "views": info.readable_views if entry.get("view_count") else "Unknown",
+                    "url": url,
+                }
+            )
+        return results
 
     @classmethod
     def show_search(
@@ -653,16 +686,7 @@ class YTDownloader:
     ) -> None:
         path = self.download_dir.resolve()
 
-        if os.name == "nt":
-            os.startfile(path)
-
-        elif shutil.which("open"):
-            os.system(f'open "{path}"')
-
-        elif shutil.which("xdg-open"):
-            os.system(f'xdg-open "{path}"')
-
-        else:
+        if not open_folder(path):
             console.print(str(path))
 
     # ========================================================

@@ -1,171 +1,182 @@
-# yt-downloader
+# ytdl
 
-> **A CLI-only app** for downloading YouTube videos and MP3 audio from your terminal. There is no graphical or web interface.
+> **A cross-platform CLI** for downloading YouTube videos, playlists, and MP3 audio from your terminal on Windows, macOS, and Linux.
 
-Download the best resolution and frame rate available for a video, inspect its details, search YouTube, or manage your local downloads. Video and audio streams are merged with FFmpeg.
+Download the best resolution and frame rate available, search YouTube, grab whole playlists, or manage your local downloads. `ytdl` checks for new versions on its own and updates itself with one command.
 
 ## Features
 
 | | |
 | --- | --- |
 | **Video** | Highest available resolution and frame rate by default; optional H.264/AAC MP4 mode or a height limit |
-| **Audio** | Download and convert to MP3, with an option to keep the video |
+| **Audio** | Download straight to MP3, or keep the video and convert it |
 | **Discover** | Show video information, search, and download a search result |
-| **Playlists** | Download every video into a named folder with numbered filenames, or choose the first N entries |
+| **Playlists** | Download every video into a named folder with numbered filenames, or only the first N entries |
 | **Manage** | Batch download, list files, show storage usage, open the download folder, and clear files |
+| **Stay current** | Daily background update check, `ytdl update` to upgrade ytdl and yt-dlp, `ytdl doctor` to check your setup |
 
 ## Install
 
-You need Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/), [FFmpeg and ffprobe](https://ffmpeg.org/download.html), and either [Node.js 22+](https://nodejs.org/en/download) or [Deno 2.3+](https://docs.deno.com/runtime/getting_started/installation/). Make sure the FFmpeg tools and JavaScript runtime are on your `PATH`.
+`ytdl` needs [FFmpeg](https://ffmpeg.org/download.html) and either [Node.js 22+](https://nodejs.org/en/download) or [Deno 2.3+](https://docs.deno.com/runtime/getting_started/installation/) on your `PATH`. The installers below set up [uv](https://docs.astral.sh/uv/) and Python for you.
 
-From the repository folder:
-
-```powershell
-uv sync
-uv run yt-downloader --help
-```
-
-You can also run the Python module or `main.py` directly:
+**Windows** (PowerShell):
 
 ```powershell
-uv run python -m yt_downloader download "URL"
-uv run python main.py download "URL"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Pratham71/YtDownloader/main/scripts/install.ps1 | iex"
 ```
 
-Python module names use underscores, so `yt_downloader` is the module name while `yt-downloader` is the terminal command.
+**macOS and Linux**:
 
-## Download quality
-
-With the built-in `best` setting, `download`, `playlist`, `grab`, and `batch` choose the **highest resolution available**, then the highest frame rate at that resolution. If the source offers 1080p at 30 or 60 fps, that quality is eligible; a lower-resolution source cannot be made 1080p. The final file is MP4 when its video and audio codecs fit that container, otherwise MKV. Some players may need newer codec support for the highest-quality formats.
-
-Add `--compatible` to prefer H.264 video and AAC audio in an MP4. This can select a lower resolution when YouTube does not provide the highest resolution in H.264. Add `--best` to use the highest available quality for one run when your saved default is `compatible`.
-
-```powershell
-uv run yt-downloader download "https://www.youtube.com/watch?v=VIDEO_ID"
-uv run yt-downloader download "https://www.youtube.com/watch?v=VIDEO_ID" --compatible
-uv run yt-downloader download "https://www.youtube.com/watch?v=VIDEO_ID" --max-height 1080
+```bash
+curl -LsSf https://raw.githubusercontent.com/Pratham71/YtDownloader/main/scripts/install.sh | sh
 ```
 
-`--max-height` is an optional ceiling, not a target: it picks the best available format at or below that height. It can be combined with `--compatible` or `--best`. If the source has no matching format below the ceiling, the download fails. The completed video download shows the selected resolution and frame rate. Downloading the same URL again with the same filename may reuse the existing file; use `-o` with a new name when switching quality modes.
+Already have uv, or prefer pipx or pip? Any of these work:
 
-## Download a playlist
-
-Pass a YouTube playlist link to `playlist`. The app downloads its videos in order into `downloads/<playlist name>/`, with names such as `001 - Video title.mp4`. Invalid folder characters are replaced for your operating system. You can choose another base folder with `--dir`.
-
-```powershell
-uv run yt-downloader playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID"
-uv run yt-downloader playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID" --compatible
-uv run yt-downloader playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID" --first 3 --max-height 1080
+```bash
+uv tool install git+https://github.com/Pratham71/YtDownloader.git
+pipx install git+https://github.com/Pratham71/YtDownloader.git
+pip install git+https://github.com/Pratham71/YtDownloader.git
 ```
 
-`--first 3` processes the first three playlist entries; omit it to download the whole playlist. Unavailable videos are skipped, so the number of files can be lower than the requested entry count. The `list`, `storage`, and `clear` commands include downloaded playlist videos.
+Open a new terminal, then run `ytdl doctor`. It checks for FFmpeg and a JavaScript runtime and prints the install command for your OS if one is missing:
 
-## Save default settings
-
-The CLI reads `config.json` from `%APPDATA%\yt-downloader\` on Windows, or `$XDG_CONFIG_HOME/yt-downloader/` on Linux and macOS (falling back to `~/.config/yt-downloader/`). The file is created when you save your first setting. Run `uv run yt-downloader config path` to see its exact location. You can also set `YT_DOWNLOADER_CONFIG_FILE` to use another JSON file.
-
-```powershell
-uv run yt-downloader config show
-uv run yt-downloader config set download-dir "C:\Videos"
-uv run yt-downloader config set quality compatible
-uv run yt-downloader config set keep-video true
-uv run yt-downloader config reset
-```
-
-`quality` accepts `best` or `compatible`; `keep-video` accepts `true` or `false`. Built-in defaults are `downloads`, `best`, and `false`. The saved download directory is stored as an absolute path, so it stays the same when you run `yt-downloader` from another folder. A command-line option overrides a saved setting for that run: use `--dir` before the command, `--compatible` or `--best` for video commands, and `--keep-video` or `--delete-video` for `audio`. The MP3 command always uses a compatible intermediate video for conversion.
-
-## All CLI commands
-
-Replace `URL` with a YouTube video link, `PLAYLIST_URL` with a playlist link, and `WORDS` with search terms. Commands below run from the repository folder.
-
-| Command | What it does |
-| --- | --- |
-| `uv run yt-downloader download "URL"` | Download a video with audio using the saved quality setting |
-| `uv run yt-downloader download "URL" -o "my-video.mp4"` | Choose an output name; the extension follows the actual container |
-| `uv run yt-downloader download "URL" --compatible` | Prefer an H.264/AAC MP4 |
-| `uv run yt-downloader download "URL" --best` | Use the highest quality for this run |
-| `uv run yt-downloader download "URL" --max-height 1080` | Pick the best format up to 1080p |
-| `uv run yt-downloader playlist "PLAYLIST_URL"` | Download the whole playlist into its own named folder |
-| `uv run yt-downloader playlist "PLAYLIST_URL" --compatible` | Download the playlist as compatible MP4 files |
-| `uv run yt-downloader playlist "PLAYLIST_URL" --best` | Use the highest quality for this playlist |
-| `uv run yt-downloader playlist "PLAYLIST_URL" --first 3` | Download only the first three entries |
-| `uv run yt-downloader playlist "PLAYLIST_URL" --max-height 1080` | Cap each video's height at 1080p |
-| `uv run yt-downloader audio "URL"` | Download and convert to MP3; remove the temporary video |
-| `uv run yt-downloader audio "URL" --keep-video` | Also keep the video used for conversion |
-| `uv run yt-downloader audio "URL" --delete-video` | Delete the source video even when the saved default keeps it |
-| `uv run yt-downloader info "URL"` | Show title, channel, duration, views, and URL |
-| `uv run yt-downloader search WORDS` | Search YouTube; show five results |
-| `uv run yt-downloader search WORDS -n 10` | Show ten search results |
-| `uv run yt-downloader grab WORDS -i 2` | Download search result number two |
-| `uv run yt-downloader grab WORDS -i 2 --compatible` | Download that result as a compatible MP4 |
-| `uv run yt-downloader grab WORDS -i 2 --best` | Download that result at highest available quality |
-| `uv run yt-downloader grab WORDS -i 2 --max-height 720` | Cap the selected video's height at 720p |
-| `uv run yt-downloader batch "URL1" "URL2"` | Download several videos |
-| `uv run yt-downloader batch "URL1" "URL2" --compatible` | Batch download compatible MP4 files |
-| `uv run yt-downloader batch "URL1" "URL2" --best` | Batch download at highest available quality |
-| `uv run yt-downloader batch "URL1" "URL2" --max-height 1080` | Cap each batch video's height at 1080p |
-| `uv run yt-downloader list` | List downloaded video and audio files |
-| `uv run yt-downloader storage` | Show disk space used by downloads |
-| `uv run yt-downloader open` | Open the downloads folder |
-| `uv run yt-downloader clear` | Delete downloads after confirmation |
-| `uv run yt-downloader clear --videos-only` | Delete only videos |
-| `uv run yt-downloader clear --audio-only` | Delete only audio files |
-| `uv run yt-downloader clear -f` | Delete without a confirmation prompt |
-| `uv run yt-downloader config show` | Show saved or built-in defaults |
-| `uv run yt-downloader config path` | Show the JSON config file location |
-| `uv run yt-downloader config set download-dir "PATH"` | Save the default download folder |
-| `uv run yt-downloader config set quality best` | Save `best` quality (or use `compatible`) |
-| `uv run yt-downloader config set keep-video true` | Keep videos after MP3 conversion by default |
-| `uv run yt-downloader config reset` | Remove saved settings and restore built-in defaults |
-
-## Options reference
-
-| Option | Used with | Explanation | Built-in behavior |
-| --- | --- | --- | --- |
-| `--dir PATH` | Before commands that use downloads | Use another download folder for this run; overrides `config set download-dir` | `downloads` when no folder is saved |
-| `-o NAME`, `--output NAME` | `download` | Set the video's filename; the final extension follows the output container | Video title |
-| `--compatible` | `download`, `playlist`, `grab`, `batch` | Prefer H.264 video plus AAC audio in MP4; may select a lower resolution | Follows saved `quality` |
-| `--best` | `download`, `playlist`, `grab`, `batch` | Choose the highest available resolution and frame rate for this run | Follows saved `quality` |
-| `--max-height PIXELS` | `download`, `playlist`, `grab`, `batch` | Limit video height to a positive number, such as `1080`; combines with either quality mode | No height limit |
-| `--first COUNT` | `playlist` | Process the first positive number of playlist entries | Entire playlist |
-| `--keep-video` | `audio` | Keep the downloaded video after MP3 conversion | Follows saved `keep-video` |
-| `--delete-video` | `audio` | Remove the downloaded video after MP3 conversion | Follows saved `keep-video` |
-| `-n N`, `--limit N` | `search` | Show up to N search results | `5` |
-| `-i N`, `--index N` | `grab` | Download the Nth search result, counting from 1 | `1` |
-| `--videos-only` | `clear` | Delete only downloaded video files, including playlist videos | Delete videos and MP3s |
-| `--audio-only` | `clear` | Delete only downloaded MP3 files | Delete videos and MP3s |
-| `-f`, `--force` | `clear` | Skip the deletion confirmation prompt | Ask before deleting |
-| `-h`, `--help` | Any command | Show usage and available arguments | — |
-
-`--compatible` and `--best` are alternatives; pick one per command. `--max-height` and `--first` accept positive whole numbers. Commands such as `info`, `list`, `storage`, and `open` do not have additional command-specific options.
-
-Use `--dir` **before** a command to choose another download folder for one run:
-
-```powershell
-uv run yt-downloader --dir "C:\Videos" download "URL"
-```
-
-Use `uv run yt-downloader --help` or `uv run yt-downloader download --help` for built-in help. By default, videos go in `downloads/` and MP3 files go in `downloads/mp3/`.
-
-## Run `yt-downloader` from anywhere
-
-Yes, you can add this CLI to your user `PATH`. From the repository folder, install its command with uv:
-
-```powershell
-uv tool install .
-uv tool update-shell
-```
-
-Open a new terminal, then run `yt-downloader --help` or `yt-downloader download "URL"` from any directory. `uv tool update-shell` adds uv's tool executable directory to your user `PATH`. FFmpeg and Node.js or Deno still need to be available on `PATH`. To pick up later project changes, reinstall with `uv tool install --force .`.
+| OS | FFmpeg | JavaScript runtime |
+| --- | --- | --- |
+| Windows | `winget install Gyan.FFmpeg` | `winget install OpenJS.NodeJS.LTS` |
+| macOS | `brew install ffmpeg` | `brew install node` |
+| Linux | `sudo apt-get install ffmpeg` (or your distro's package manager) | `curl -fsSL https://deno.land/install.sh \| sh` |
 
 ## Updating
 
-If YouTube changes and downloads stop working, update the extractor and sync the environment:
+`ytdl` checks GitHub and PyPI for new versions of itself and of [yt-dlp](https://github.com/yt-dlp/yt-dlp) at most once a day, in the background, and prints a short notice after a command when something newer is out. To update:
 
-```powershell
-uv lock --upgrade-package yt-dlp
-uv sync
+```bash
+ytdl update            # upgrade ytdl and yt-dlp
+ytdl update --check    # only show installed and latest versions
+ytdl update --dry-run  # show the commands it would run
 ```
+
+`ytdl update` detects how it was installed (uv, pipx, pip, or a git checkout) and runs the matching upgrade. On Windows, the upgrade runs in a new console window, because Windows cannot replace a program while it is running. If YouTube changes and downloads start failing, `ytdl update` is the first thing to try: it pulls in the newest yt-dlp.
+
+Turn the background check off with `ytdl config set check-updates false`, or for one run with the environment variable `YTDL_NO_UPDATE_CHECK=1`.
+
+## Download quality
+
+With the built-in `best` setting, `download`, `playlist`, `grab`, and `batch` choose the **highest resolution available**, then the highest frame rate at that resolution. The final file is MP4 when its video and audio codecs fit that container, otherwise MKV. Some players may need newer codec support for the highest-quality formats.
+
+Add `--compatible` to prefer H.264 video and AAC audio in an MP4. This can select a lower resolution when YouTube does not provide the highest resolution in H.264. Add `--best` to use the highest available quality for one run when your saved default is `compatible`.
+
+```bash
+ytdl download "https://www.youtube.com/watch?v=VIDEO_ID"
+ytdl download "https://www.youtube.com/watch?v=VIDEO_ID" --compatible
+ytdl download "https://www.youtube.com/watch?v=VIDEO_ID" --max-height 1080
+```
+
+`--max-height` is a ceiling, not a target: it picks the best available format at or below that height, and combines with `--compatible` or `--best`. Downloading the same URL again with the same filename may reuse the existing file; use `-o` with a new name when switching quality modes.
+
+## Download a playlist
+
+Pass a playlist link to `playlist`. Videos are saved in order into `<download folder>/<playlist name>/`, with names such as `001 - Video title.mp4`.
+
+```bash
+ytdl playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID"
+ytdl playlist "https://www.youtube.com/playlist?list=PLAYLIST_ID" --first 3 --max-height 1080
+```
+
+Unavailable videos are skipped, so the number of files can be lower than the entry count. `list`, `storage`, and `clear` include playlist videos.
+
+## Where files go
+
+By default, videos go to `Downloads/ytdl` in your home folder and MP3 files to `Downloads/ytdl/mp3`. Change it for one run with `--dir` **before** the command, or save a new default:
+
+```bash
+ytdl --dir ./videos download "URL"
+ytdl config set download-dir ~/Videos/youtube
+```
+
+## Save default settings
+
+Settings live in `config.json`, created when you save your first setting:
+
+| OS | Location |
+| --- | --- |
+| Windows | `%APPDATA%\ytdl\config.json` |
+| macOS | `~/Library/Application Support/ytdl/config.json` |
+| Linux | `$XDG_CONFIG_HOME/ytdl/config.json` (default `~/.config/ytdl/config.json`) |
+
+Run `ytdl config path` to see the exact file, or set `YTDL_CONFIG_FILE` to use another one. Settings from the old `yt-downloader` config folder are moved over automatically the first time `ytdl` runs.
+
+```bash
+ytdl config show
+ytdl config set download-dir "~/Videos"
+ytdl config set quality compatible
+ytdl config set keep-video true
+ytdl config set check-updates false
+ytdl config reset
+```
+
+| Setting | Values | Built-in default |
+| --- | --- | --- |
+| `download-dir` | Any folder; saved as an absolute path | `~/Downloads/ytdl` |
+| `quality` | `best` or `compatible` | `best` |
+| `keep-video` | `true` or `false` | `false` |
+| `check-updates` | `true` or `false` | `true` |
+
+A command-line option overrides a saved setting for that run: `--dir`, `--compatible` / `--best`, and `--keep-video` / `--delete-video`.
+
+## All commands
+
+| Command | What it does |
+| --- | --- |
+| `ytdl download "URL"` | Download a video with audio using the saved quality setting |
+| `ytdl download "URL" -o "my-video.mp4"` | Choose an output name; the extension follows the actual container |
+| `ytdl download "URL" --compatible` | Prefer an H.264/AAC MP4 |
+| `ytdl download "URL" --max-height 1080` | Pick the best format up to 1080p |
+| `ytdl playlist "PLAYLIST_URL"` | Download the whole playlist into its own folder |
+| `ytdl playlist "PLAYLIST_URL" --first 3` | Download only the first three entries |
+| `ytdl audio "URL"` | Download the audio only and save it as MP3 |
+| `ytdl audio "URL" --keep-video` | Download the video too, then convert it to MP3 |
+| `ytdl info "URL"` | Show title, channel, duration, views, and URL |
+| `ytdl search WORDS -n 10` | Search YouTube; show ten results (default five) |
+| `ytdl grab WORDS -i 2` | Download search result number two |
+| `ytdl batch "URL1" "URL2"` | Download several videos |
+| `ytdl list` | List downloaded video and audio files |
+| `ytdl storage` | Show disk space used by downloads |
+| `ytdl open` | Open the downloads folder in your file manager |
+| `ytdl clear` | Delete downloads after confirmation (`--videos-only`, `--audio-only`, `-f`) |
+| `ytdl config show` / `path` / `set` / `reset` | Manage saved defaults |
+| `ytdl update` | Upgrade ytdl and yt-dlp (`--check`, `--dry-run`) |
+| `ytdl doctor` | Check FFmpeg, the JavaScript runtime, and versions |
+| `ytdl --version` | Print the installed version |
+
+`--compatible`, `--best`, and `--max-height` work with `download`, `playlist`, `grab`, and `batch`. Use `ytdl --help` or `ytdl COMMAND --help` for built-in help.
+
+## Development
+
+```bash
+git clone https://github.com/Pratham71/YtDownloader.git
+cd YtDownloader
+uv sync
+uv run ytdl --help
+uv run python -m unittest discover -s tests -t .
+```
+
+`uv run python -m ytdl` also works. Set `YT_DOWNLOAD_LIVE_TEST=1` to include the test that downloads a real video. In a git checkout, `ytdl update` runs `git pull --ff-only` and `uv sync --upgrade-package yt-dlp`.
+
+### Releasing a new version
+
+Installed copies learn about new versions from the `version` in `pyproject.toml` on the `main` branch, so a release is:
+
+1. Raise `version` in `pyproject.toml` and run `uv lock`.
+2. Add the changes to [CHANGELOG.md](CHANGELOG.md).
+3. Commit and push to `main`. Optionally tag it, for example `git tag v0.3.0 && git push --tags`.
+
+Within a day, everyone's `ytdl` shows a notice, and `ytdl update` installs the new version.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

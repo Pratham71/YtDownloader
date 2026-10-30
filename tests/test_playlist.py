@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from yt_downloader.cli import create_parser
-from yt_downloader.downloader import YTDownloader
+from ytdl.cli import create_parser
+from ytdl.downloader import YTDownloader
 
 
 class FakeYoutubeDL:
@@ -35,7 +35,7 @@ class PlaylistTest(unittest.TestCase):
     def test_playlist_download_uses_title_folder_and_library_sees_videos(self):
         FakeYoutubeDL.calls = []
         FakeYoutubeDL.title = "My / Playlist"
-        with tempfile.TemporaryDirectory() as directory, patch("yt_downloader.downloader.YoutubeDL", FakeYoutubeDL):
+        with tempfile.TemporaryDirectory() as directory, patch("ytdl.downloader.YoutubeDL", FakeYoutubeDL):
             downloader = YTDownloader(download_dir=directory)
             folder = downloader.download_playlist("https://www.youtube.com/playlist?list=example")
 
@@ -51,7 +51,7 @@ class PlaylistTest(unittest.TestCase):
     def test_percent_in_playlist_title_is_escaped_for_output_template(self):
         FakeYoutubeDL.calls = []
         FakeYoutubeDL.title = "100% Hits"
-        with tempfile.TemporaryDirectory() as directory, patch("yt_downloader.downloader.YoutubeDL", FakeYoutubeDL):
+        with tempfile.TemporaryDirectory() as directory, patch("ytdl.downloader.YoutubeDL", FakeYoutubeDL):
             folder = YTDownloader(download_dir=directory).download_playlist("https://www.youtube.com/playlist?list=example")
             self.assertEqual(folder, Path(directory) / "100% Hits")
             self.assertEqual(len(list(folder.glob("*.mp4"))), 2)
@@ -65,7 +65,7 @@ class PlaylistTest(unittest.TestCase):
     def test_playlist_first_only_limits_download_pass(self):
         FakeYoutubeDL.calls = []
         FakeYoutubeDL.title = "My / Playlist"
-        with tempfile.TemporaryDirectory() as directory, patch("yt_downloader.downloader.YoutubeDL", FakeYoutubeDL):
+        with tempfile.TemporaryDirectory() as directory, patch("ytdl.downloader.YoutubeDL", FakeYoutubeDL):
             YTDownloader(download_dir=directory).download_playlist("https://example.com/list", first=1)
             self.assertNotIn("playlistend", FakeYoutubeDL.calls[0])
             self.assertEqual(FakeYoutubeDL.calls[1]["playlistend"], 1)
