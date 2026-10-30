@@ -27,6 +27,8 @@ INSTALL_SPEC = f"git+{REPO_URL}.git"
 REMOTE_PYPROJECT = f"https://raw.githubusercontent.com/{REPO}/main/pyproject.toml"
 YT_DLP_PYPI = "https://pypi.org/pypi/yt-dlp/json"
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+# Versions come from the network and are printed; accept only plain release numbers.
+VERSION_PATTERN = re.compile(r"\d+(\.\d+){0,3}")
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -43,6 +45,10 @@ def current_version() -> str:
 
 def parse_version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", text.split("+")[0]))
+
+
+def valid_version(text: object) -> str | None:
+    return text if isinstance(text, str) and VERSION_PATTERN.fullmatch(text) else None
 
 
 def is_newer(latest: str | None, current: str) -> bool:
@@ -65,12 +71,14 @@ def _fetch(url: str, timeout: float) -> bytes:
         return response.read()
 
 
-def latest_ytdl_version(timeout: float = 5) -> str:
-    return tomllib.loads(_fetch(REMOTE_PYPROJECT, timeout).decode("utf-8"))["project"]["version"]
+def latest_ytdl_version(timeout: float = 5) -> str | None:
+    return valid_version(
+        tomllib.loads(_fetch(REMOTE_PYPROJECT, timeout).decode("utf-8"))["project"]["version"]
+    )
 
 
-def latest_yt_dlp_version(timeout: float = 5) -> str:
-    return json.loads(_fetch(YT_DLP_PYPI, timeout))["info"]["version"]
+def latest_yt_dlp_version(timeout: float = 5) -> str | None:
+    return valid_version(json.loads(_fetch(YT_DLP_PYPI, timeout))["info"]["version"])
 
 
 @dataclass(frozen=True)
@@ -100,9 +108,9 @@ def _read_state() -> dict:
 def _status_from(state: dict) -> UpdateStatus:
     return UpdateStatus(
         current=current_version(),
-        latest=state.get("latest"),
+        latest=valid_version(state.get("latest")),
         yt_dlp_current=installed_version("yt-dlp"),
-        yt_dlp_latest=state.get("yt_dlp_latest"),
+        yt_dlp_latest=valid_version(state.get("yt_dlp_latest")),
     )
 
 
