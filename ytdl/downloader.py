@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from pathlib import Path
 from time import perf_counter
 
+import yt_dlp
 from yt_dlp import YoutubeDL
+from yt_dlp.cookies import SUPPORTED_BROWSERS
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -19,6 +25,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from . import cache
 from .models import VideoInfo
 from .system import open_folder, require_ffmpeg
 from .utils import (
@@ -29,6 +36,32 @@ from .utils import (
 
 
 console = Console()
+
+
+class DownloadCancelled(Exception):
+    pass
+
+
+def clean_error(exc: BaseException) -> str:
+    """yt-dlp's message without its 'ERROR: ' prefix, safe to print with rich."""
+    return escape(str(exc).removeprefix("ERROR: ").strip())
+
+
+class _Logger:
+    """Send yt-dlp's warnings to the ytdl console and leave errors to ytdl,
+    which reports them once, with hints."""
+
+    def debug(self, message: str) -> None:
+        pass
+
+    def info(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        console.print(f"[yellow]Warning:[/yellow] [dim]{escape(message)}[/dim]")
+
+    def error(self, message: str) -> None:
+        pass
 
 
 class YTDownloader:
@@ -43,17 +76,40 @@ class YTDownloader:
         ".wav",
         ".m4a",
         ".aac",
+        ".opus",
+        ".ogg",
+        ".flac",
     }
+
+    # The video ID keeps names unique: many sites reuse titles such as
+    # "Video by instagram", and later downloads would overwrite earlier ones.
+    NAME_TEMPLATE = "%(title).150B [%(id)s].%(ext)s"
+
+    # Batch and playlist downloads record finished video IDs here, per folder,
+    # so running the same command again skips what is already downloaded.
+    ARCHIVE_NAME = ".ytdl-archive.txt"
 
     def __init__(
         self,
         url: str | None = None,
         download_dir: str | Path = "downloads",
+        cookies_from_browser: str | None = None,
+        cookie_file: str | Path | None = None,
+        embed_metadata: bool = True,
+        subtitles: str | None = None,
     ):
         self.url = url
 
         self.download_dir = Path(download_dir).expanduser()
         self.audio_dir = self.download_dir / "mp3"
+        self.cookies_from_browser = parse_browser(cookies_from_browser)
+        self.cookie_file = Path(cookie_file).expanduser() if cookie_file else None
+        self.embed_metadata = embed_metadata
+        self.subtitles = subtitles
+        self._cancel = threading.Event()
+
+        if self.cookie_file and not self.cookie_file.is_file():
+            raise FileNotFoundError(f"Cookie file not found: {self.cookie_file}")
 
         self.download_dir.mkdir(
             parents=True,
@@ -76,7 +132,7 @@ class YTDownloader:
         final_url = url or self.url
 
         if not final_url:
-            raise ValueError("No YouTube URL was provided.")
+            raise ValueError("No video URL was provided.")
 
         return final_url
 
@@ -88,86 +144,214 @@ class YTDownloader:
             duration_seconds=int(data.get("duration") or 0),
             views=data.get("view_count") or 0,
             url=data.get("webpage_url") or url,
+            site=data.get("extractor_key") or data.get("ie_key") or "",
         )
 
     @staticmethod
-    def _ydl_options() -> dict:
-        return {
+    def _entry_url(entry: dict) -> str:
+        for key in ("webpage_url", "url"):
+            if str(entry.get(key) or "").startswith("http"):
+                return entry[key]
+        # YouTube's flat playlist and search entries carry only the video ID.
+        if entry.get("id") and entry.get("ie_key", "Youtube") == "Youtube":
+            return f"https://www.youtube.com/watch?v={entry['id']}"
+        return entry.get("url") or ""
+
+    def _ydl_options(self) -> dict:
+        options = {
             "noplaylist": True,
             "quiet": True,
+            "logger": _Logger(),
             # Deno works by default; explicitly enable Node when it is installed.
             "js_runtimes": {"deno": {}, "node": {}},
         }
+        if self.cookies_from_browser:
+            options["cookiesfrombrowser"] = self.cookies_from_browser
+        if self.cookie_file:
+            options["cookiefile"] = str(self.cookie_file)
+        return options
 
-    @classmethod
-    def _video_options(cls, compatible: bool, max_height: int | None = None) -> dict:
-        height_filter = f"[height<={max_height}]" if max_height is not None else ""
+    @staticmethod
+    def format_selector(
+        compatible: bool = False,
+        max_height: int | None = None,
+        format_id: str | None = None,
+    ) -> str:
+        if format_id:
+            # A video-only format gets the best audio; anything else is used as is.
+            return f"{format_id}+ba/{format_id}"
+        # `<=?` also accepts formats that do not report a height, such as audio-only
+        # formats and some Instagram videos.
+        height_filter = f"[height<=?{max_height}]" if max_height is not None else ""
         if compatible:
-            video_format = (
-                f"bv[vcodec^=avc1][ext=mp4]{height_filter}+ba[ext=m4a]/"
-                f"b[vcodec^=avc1][ext=mp4]{height_filter}"
+            # YouTube names H.264 "avc1"; TikTok, Instagram, and others say "h264".
+            h264 = "[vcodec~='^(avc1|h264)'][ext=mp4]"
+            return (
+                f"bv{h264}{height_filter}+ba[ext=m4a]/"
+                f"b{h264}{height_filter}"
             )
-        else:
-            video_format = f"bv{height_filter}+ba/b{height_filter}"
+        return f"bv{height_filter}+ba/b{height_filter}"
 
-        options = cls._ydl_options()
+    def _postprocessing_options(self, audio: bool = False) -> dict:
+        """Metadata, thumbnail, subtitle, and MP3 steps, built the way the yt-dlp CLI builds them."""
+        argv = []
+        if audio:
+            argv += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
+        if self.embed_metadata:
+            argv += ["--embed-metadata", "--embed-thumbnail"]
+        if self.subtitles and not audio:
+            argv += [
+                "--write-subs", "--write-auto-subs",
+                "--sub-langs", self.subtitles, "--embed-subs",
+            ]
+        if not argv:
+            return {}
+
+        parsed = yt_dlp.parse_options(argv).ydl_opts
+        options = {
+            key: parsed[key]
+            for key in ("writethumbnail", "writesubtitles", "writeautomaticsub", "subtitleslangs")
+            if parsed.get(key)
+        }
+        options["postprocessors"] = [
+            processor for processor in parsed["postprocessors"]
+            if processor["key"] != "FFmpegConcat"
+        ]
+        return options
+
+    def _video_options(
+        self,
+        compatible: bool = False,
+        max_height: int | None = None,
+        format_id: str | None = None,
+    ) -> dict:
+        options = self._ydl_options()
+        options.update(self._postprocessing_options())
         options.update(
             {
-                "format": video_format,
-                "merge_output_format": "mp4" if compatible else "mp4/mkv",
+                "format": self.format_selector(compatible, max_height, format_id),
+                "merge_output_format": "mp4" if compatible and not format_id else "mp4/mkv",
             }
         )
-        if not compatible:
+        if not compatible and not format_id:
             options["format_sort"] = ["res", "fps"]
             options["format_sort_force"] = True
         return options
 
     @staticmethod
-    def _download_with_progress(url: str, options: dict) -> tuple[dict, Path, float]:
-        """Run yt-dlp with a progress bar; return its info, the file, and seconds taken."""
-        progress_task = None
-        options = {**options, "noprogress": True, "progress_hooks": []}
-
-        with Progress(
+    def _progress() -> Progress:
+        return Progress(
             TextColumn("[bold cyan]{task.description}"),
             BarColumn(),
             DownloadColumn(),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
             console=console,
-        ) as progress:
+        )
 
-            def on_progress(status: dict) -> None:
-                nonlocal progress_task
+    def _download_with_progress(
+        self,
+        url: str,
+        options: dict,
+        progress: Progress | None = None,
+        label: str = "Downloading",
+    ) -> tuple[dict | None, list[Path], float]:
+        """Run yt-dlp with a progress bar; return its info, the files, and seconds taken.
 
-                if status["status"] not in {"downloading", "finished"}:
-                    return
+        A post with several videos (an Instagram carousel, say) gives several files.
+        The info is None and the list empty when the video is already in the
+        download archive. Pass a shared ``progress`` to show several downloads at once.
+        """
+        progress_task = None
+        options = {**options, "noprogress": True, "progress_hooks": []}
+        shared = progress is not None
+        progress = progress or self._progress()
 
-                total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
-                downloaded = status.get("downloaded_bytes") or total
+        def on_progress(status: dict) -> None:
+            nonlocal progress_task
 
-                if progress_task is None:
-                    progress_task = progress.add_task(
-                        "Downloading",
-                        total=total or None,
-                    )
+            if self._cancel.is_set():
+                raise DownloadCancelled("Cancelled.")
 
-                progress.update(
-                    progress_task,
+            if status["status"] not in {"downloading", "finished"}:
+                return
+
+            total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
+            downloaded = status.get("downloaded_bytes") or total
+
+            if progress_task is None:
+                progress_task = progress.add_task(
+                    label,
                     total=total or None,
-                    completed=downloaded,
                 )
 
-            options["progress_hooks"].append(on_progress)
-            start = perf_counter()
-            with YoutubeDL(options) as ydl:
-                data = ydl.extract_info(url, download=True)
-                downloads = data.get("requested_downloads") or []
-                result = downloads[0].get("filepath") if downloads else None
-                path = Path(result or ydl.prepare_filename(data))
-            elapsed = perf_counter() - start
+            progress.update(
+                progress_task,
+                total=total or None,
+                completed=downloaded,
+            )
 
-        return data, path, elapsed
+        options["progress_hooks"].append(on_progress)
+        try:
+            with nullcontext() if shared else progress:
+                start = perf_counter()
+                with YoutubeDL(options) as ydl:
+                    data = ydl.extract_info(url, download=True)
+                    if data is None:
+                        return None, [], perf_counter() - start
+                    paths = self._downloaded_paths(data, ydl)
+                elapsed = perf_counter() - start
+        finally:
+            if shared and progress_task is not None:
+                progress.remove_task(progress_task)
+
+        return data, paths, elapsed
+
+    @staticmethod
+    def _downloaded_paths(data: dict, ydl: YoutubeDL) -> list[Path]:
+        entries = data.get("entries")
+        items = [entry for entry in entries or [] if entry] if entries is not None else [data]
+        paths = [
+            Path(download["filepath"])
+            for item in items
+            for download in item.get("requested_downloads") or []
+            if download.get("filepath")
+        ]
+        if not paths and entries is None:
+            paths = [Path(ydl.prepare_filename(data))]
+        if not paths:
+            raise RuntimeError(
+                "Nothing to download here. The post may contain only images, "
+                "which ytdl does not download."
+            )
+        return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _output_name(filename: str | None) -> str:
+        if not filename:
+            return YTDownloader.NAME_TEMPLATE
+        filename = sanitize_filename(filename)
+        suffix = Path(filename).suffix.lower()
+        if suffix in YTDownloader.VIDEO_EXTENSIONS:
+            filename = filename[: -len(suffix)]
+        # Number the files when the URL holds several videos: "name - 1.mp4", ...
+        # (yt-dlp template fields cannot contain parentheses).
+        return filename.replace("%", "%%") + "%(playlist_index& - {}|)s.%(ext)s"
+
+    @staticmethod
+    def _quality_label(data: dict) -> str:
+        data = next((entry for entry in data.get("entries") or [] if entry), data)
+        if data.get("vcodec") == "none":
+            return "audio only"
+        # Merged downloads may only report the height on the formats they combined.
+        height = data.get("height") or max(
+            (item.get("height") or 0 for item in data.get("requested_formats") or []), default=0
+        )
+        fps = data.get("fps")
+        quality = f"{height}p" if height else "Unknown resolution"
+        if fps:
+            quality += f" | {fps:g} fps"
+        return quality
 
     # ========================================================
     # VIDEO INFO
@@ -182,6 +366,23 @@ class YTDownloader:
             data = ydl.extract_info(final_url, download=False)
         return self._video_info(data, final_url)
 
+    @staticmethod
+    def supported_sites(match: str | None = None) -> list[str]:
+        """Names of the sites yt-dlp can download from, optionally filtered."""
+        from yt_dlp.extractor import gen_extractor_classes
+
+        unique: dict[str, str] = {}
+        for extractor in gen_extractor_classes():
+            name = extractor.IE_NAME.split(":")[0]
+            if extractor.working() and name != "generic":
+                # Prefer the capitalised spelling, e.g. "TikTok" over "tiktok".
+                if name.lower() not in unique or name[:1].isupper():
+                    unique[name.lower()] = name
+        names = sorted(unique.values(), key=str.lower)
+        if match:
+            names = [name for name in names if match.lower() in name.lower()]
+        return names
+
     def show_info(
         self,
         url: str | None = None,
@@ -189,7 +390,7 @@ class YTDownloader:
         info = self.info(url)
 
         table = Table(
-            title="YouTube Video",
+            title=f"{info.site or 'Video'} video",
             show_header=False,
             border_style="cyan",
         )
@@ -203,12 +404,12 @@ class YTDownloader:
 
         table.add_row(
             "Title",
-            info.title,
+            escape(info.title),
         )
 
         table.add_row(
             "Channel",
-            info.author,
+            escape(info.author),
         )
 
         table.add_row(
@@ -223,10 +424,83 @@ class YTDownloader:
 
         table.add_row(
             "URL",
-            info.url,
+            escape(info.url),
         )
 
         console.print(table)
+
+    # ========================================================
+    # FORMATS
+    # ========================================================
+
+    def formats(
+        self,
+        url: str | None = None,
+    ) -> list[dict]:
+        """Available formats for a video, best first."""
+        final_url = self._require_url(url)
+        with YoutubeDL(self._ydl_options()) as ydl:
+            data = ydl.extract_info(final_url, download=False)
+
+        rows = []
+        for item in reversed(data.get("formats") or []):
+            if item.get("ext") == "mhtml" or "storyboard" in (item.get("format_note") or ""):
+                continue
+            has_video = (item.get("vcodec") or "none") != "none"
+            has_audio = (item.get("acodec") or "none") != "none"
+            if not has_video and not has_audio:
+                continue
+            size = item.get("filesize") or item.get("filesize_approx")
+            rows.append(
+                {
+                    "id": str(item["format_id"]),
+                    "ext": item.get("ext") or "?",
+                    "resolution": f"{item['height']}p" if item.get("height") else "audio only",
+                    "fps": f"{item['fps']:g}" if item.get("fps") else "",
+                    "contents": "video+audio" if has_video and has_audio else ("video" if has_video else "audio"),
+                    "codecs": " / ".join(
+                        codec.split(".")[0]
+                        for codec in (item.get("vcodec"), item.get("acodec"))
+                        if codec and codec != "none"
+                    ),
+                    "size": format_size(size) if size else "",
+                }
+            )
+        return rows
+
+    def show_formats(
+        self,
+        url: str | None = None,
+    ) -> list[dict]:
+        rows = self.formats(url)
+
+        table = Table(
+            title="Available formats",
+            border_style="cyan",
+        )
+        for column in ("ID", "Ext", "Resolution", "FPS", "Contents", "Codecs", "Size"):
+            table.add_column(column, style="bold cyan" if column == "ID" else None, no_wrap=True)
+        for row in rows:
+            table.add_row(*(escape(value) for value in row.values()))
+
+        console.print(table)
+        console.print("[dim]Video-only formats are merged with the best audio automatically.[/dim]")
+        return rows
+
+    def choose_format(
+        self,
+        url: str | None = None,
+    ) -> str | None:
+        """Show the formats and ask for one. Returns None to keep the default quality."""
+        rows = self.show_formats(url)
+        ids = {row["id"] for row in rows}
+        while True:
+            answer = console.input("[cyan]Format ID (Enter for the default quality): [/cyan]").strip()
+            if not answer:
+                return None
+            if answer in ids:
+                return answer
+            console.print(f"[red]'{answer}' is not in the list.[/red]")
 
     # ========================================================
     # VIDEO DOWNLOAD
@@ -238,38 +512,25 @@ class YTDownloader:
         filename: str | None = None,
         compatible: bool = False,
         max_height: int | None = None,
+        format_id: str | None = None,
     ) -> Path:
         final_url = self._require_url(url)
 
-        if filename:
-            filename = sanitize_filename(filename)
-            suffix = Path(filename).suffix.lower()
-            if suffix in self.VIDEO_EXTENSIONS:
-                filename = filename[: -len(suffix)]
-            output_name = filename.replace("%", "%%") + ".%(ext)s"
-        else:
-            output_name = "%(title).200B.%(ext)s"
-
-        options = self._video_options(compatible, max_height)
-        options["outtmpl"] = str(self.download_dir / output_name)
-        data, path, elapsed = self._download_with_progress(final_url, options)
+        options = self._video_options(compatible, max_height, format_id)
+        options["outtmpl"] = str(self.download_dir / self._output_name(filename))
+        data, paths, elapsed = self._download_with_progress(final_url, options)
 
         info = self._video_info(data, final_url)
-        height = data.get("height")
-        fps = data.get("fps")
-        quality = f"{height}p" if height else "Unknown resolution"
-        if fps:
-            quality += f" | {fps} fps"
 
         console.print(
             Panel.fit(
                 (
-                    f"[bold]{info.title}[/bold]\n"
-                    f"[dim]{info.author} | {info.duration} | "
+                    f"[bold]{escape(info.title)}[/bold]\n"
+                    f"[dim]{escape(info.author)} | {info.duration} | "
                     f"{info.readable_views} views[/dim]\n"
-                    f"[cyan]{quality}[/cyan]"
+                    f"[cyan]{self._quality_label(data)}[/cyan]"
                 ),
-                title="YouTube Video",
+                title=f"{info.site or 'Video'} video",
                 border_style="cyan",
             )
         )
@@ -280,14 +541,78 @@ class YTDownloader:
                     "[green bold]"
                     "Download complete"
                     "[/green bold]\n"
-                    f"{path.name}\n"
-                    f"[dim]{elapsed:.2f}s[/dim]"
+                    + "\n".join(escape(path.name) for path in paths)
+                    + f"\n[dim]{elapsed:.2f}s[/dim]"
                 ),
                 border_style="green",
             )
         )
 
-        return path
+        return paths[0]
+
+    def _download_entries(
+        self,
+        entries: list[tuple[str, str]],
+        archive: Path | None,
+        jobs: int = 1,
+        compatible: bool = False,
+        max_height: int | None = None,
+    ) -> tuple[list[Path], int, int]:
+        """Download (url, output template) pairs, up to ``jobs`` at a time.
+
+        Returns the downloaded files, the number skipped because they were
+        already downloaded, and the number that failed.
+        """
+        base = self._video_options(compatible, max_height)
+        if archive is not None:
+            base["download_archive"] = str(archive)
+
+        downloaded: list[Path] = []
+        skipped = failed = 0
+        self._cancel.clear()
+
+        progress = self._progress()
+
+        def fetch(position: int, url: str, template: str) -> tuple[dict | None, list[Path]]:
+            data, paths, _ = self._download_with_progress(
+                url, {**base, "outtmpl": template}, progress=progress, label=f"#{position}"
+            )
+            return data, paths
+
+        with progress, ThreadPoolExecutor(max_workers=jobs) as pool:
+            futures = {
+                pool.submit(fetch, position, url, template): url
+                for position, (url, template) in enumerate(entries, start=1)
+            }
+            try:
+                for finished, future in enumerate(as_completed(futures), start=1):
+                    url = futures[future]
+                    count = f"[dim]({finished}/{len(entries)})[/dim]"
+                    try:
+                        data, paths = future.result()
+                    except Exception as exc:
+                        failed += 1
+                        progress.console.print(
+                            f"{count} [red]Failed:[/red] {escape(url)}\n[dim]{clean_error(exc)}[/dim]"
+                        )
+                        continue
+                    if data is None:
+                        skipped += 1
+                        progress.console.print(f"{count} [dim]Already downloaded: {escape(url)}[/dim]")
+                        continue
+                    downloaded.extend(paths)
+                    for path in paths:
+                        progress.console.print(
+                            f"{count} [green]Done:[/green] {escape(path.name)} "
+                            f"[dim]({self._quality_label(data)})[/dim]"
+                        )
+            except KeyboardInterrupt:
+                # Stop the running downloads at their next progress update.
+                self._cancel.set()
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
+
+        return downloaded, skipped, failed
 
     def download_playlist(
         self,
@@ -295,10 +620,14 @@ class YTDownloader:
         compatible: bool = False,
         max_height: int | None = None,
         first: int | None = None,
+        jobs: int = 1,
+        skip_downloaded: bool = True,
     ) -> Path:
         final_url = self._require_url(url)
         metadata_options = self._ydl_options()
         metadata_options.update({"noplaylist": False, "extract_flat": "in_playlist"})
+        if first is not None:
+            metadata_options["playlistend"] = first
         with YoutubeDL(metadata_options) as ydl:
             metadata = ydl.extract_info(final_url, download=False)
 
@@ -309,36 +638,40 @@ class YTDownloader:
         title = title.strip(" .") or "Playlist"
         folder = self.download_dir / title
         folder.mkdir(parents=True, exist_ok=True)
-        output_template = (
-            str(folder).replace("%", "%%")
-            + os.sep
-            + "%(playlist_index)03d - %(title).200B.%(ext)s"
+        folder_template = str(folder).replace("%", "%%") + os.sep
+
+        entries = []
+        for position, entry in enumerate(metadata.get("entries") or [], start=1):
+            if first is not None and position > first:
+                break
+            if not entry:
+                continue
+            index = entry.get("playlist_index") or position
+            entries.append(
+                (self._entry_url(entry), folder_template + f"{index:03d} - {self.NAME_TEMPLATE}")
+            )
+
+        console.print(
+            f"[cyan]Downloading playlist:[/cyan] [bold]{escape(title)}[/bold] "
+            f"[dim]({len(entries)} videos)[/dim]"
+        )
+        downloaded, skipped, failed = self._download_entries(
+            entries,
+            archive=folder / self.ARCHIVE_NAME if skip_downloaded else None,
+            jobs=jobs,
+            compatible=compatible,
+            max_height=max_height,
         )
 
-        options = self._video_options(compatible, max_height)
-        options.update(
-            {
-                "noplaylist": False,
-                "ignoreerrors": True,
-                "quiet": False,
-                "outtmpl": output_template,
-            }
-        )
-        if first is not None:
-            options["playlistend"] = first
-
-        console.print(f"[cyan]Downloading playlist:[/cyan] [bold]{title}[/bold]")
-        with YoutubeDL(options) as ydl:
-            ydl.extract_info(final_url, download=True)
-
-        count = sum(
-            1 for path in folder.iterdir()
-            if path.is_file() and path.suffix.lower() in self.VIDEO_EXTENSIONS
-        )
-        if not count:
+        if not downloaded and not skipped:
             raise RuntimeError("No videos were downloaded from this playlist.")
 
-        console.print(f"[green]Playlist saved:[/green] {folder} ({count} videos)")
+        summary = f"{len(downloaded)} downloaded"
+        if skipped:
+            summary += f", {skipped} already there"
+        if failed:
+            summary += f", {failed} failed"
+        console.print(f"[green]Playlist saved:[/green] {escape(str(folder))} ({summary})")
         return folder
 
     # ========================================================
@@ -367,7 +700,7 @@ class YTDownloader:
 
         output_path = self.audio_dir / output_name
 
-        console.print((f"\n[cyan]Converting:[/cyan] [bold]{video_path.name}[/bold]"))
+        console.print((f"\n[cyan]Converting:[/cyan] [bold]{escape(video_path.name)}[/bold]"))
 
         start = perf_counter()
 
@@ -376,7 +709,8 @@ class YTDownloader:
                 require_ffmpeg(),
                 "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(video_path),
-                "-vn", "-codec:a", "libmp3lame", "-q:a", "0",
+                "-map", "0:a", "-map_metadata", "0",
+                "-codec:a", "libmp3lame", "-q:a", "0",
                 str(output_path),
             ],
             capture_output=True,
@@ -404,7 +738,7 @@ class YTDownloader:
                     "[green bold]"
                     "MP3 conversion complete"
                     "[/green bold]\n"
-                    f"{path.name}\n"
+                    f"{escape(path.name)}\n"
                     f"[dim]{elapsed:.2f}s[/dim]"
                 ),
                 border_style="green",
@@ -424,38 +758,37 @@ class YTDownloader:
         final_url = self._require_url(url)
         require_ffmpeg()
         options = self._ydl_options()
+        options.update(self._postprocessing_options(audio=True))
         options.update(
             {
                 "format": "ba/b",
-                "outtmpl": str(self.audio_dir / "%(title).200B.%(ext)s"),
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "0",
-                    }
-                ],
+                "outtmpl": str(self.audio_dir / self.NAME_TEMPLATE),
             }
         )
-        _, path, elapsed = self._download_with_progress(final_url, options)
-        path = path.with_suffix(".mp3")
-        self._show_mp3_complete(path, elapsed)
-        return path
+        _, paths, elapsed = self._download_with_progress(final_url, options)
+        paths = [path.with_suffix(".mp3") for path in paths]
+        for path in paths:
+            self._show_mp3_complete(path, elapsed)
+        return paths[0]
 
     # ========================================================
     # SEARCH
     # ========================================================
 
-    @classmethod
     def search(
-        cls,
+        self,
         query: str,
         limit: int = 5,
     ) -> list[dict]:
         if limit < 1:
             raise ValueError("Search limit must be at least 1.")
 
-        options = cls._ydl_options()
+        # Reuse recent results so `grab` picks the same video `search` showed.
+        cached = cache.cached_search(query, limit)
+        if cached is not None:
+            return cached
+
+        options = self._ydl_options()
         options["extract_flat"] = True
         with YoutubeDL(options) as ydl:
             data = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -464,10 +797,8 @@ class YTDownloader:
         for entry in data.get("entries") or []:
             if not entry:
                 continue
-            url = entry.get("url") or entry.get("webpage_url")
-            if entry.get("id") and not str(url or "").startswith("http"):
-                url = f"https://www.youtube.com/watch?v={entry['id']}"
-            info = cls._video_info(entry, url)
+            url = self._entry_url(entry)
+            info = self._video_info(entry, url)
             results.append(
                 {
                     "title": info.title,
@@ -477,21 +808,21 @@ class YTDownloader:
                     "url": url,
                 }
             )
+        cache.store_search(query, limit, results)
         return results
 
-    @classmethod
     def show_search(
-        cls,
+        self,
         query: str,
         limit: int = 5,
     ) -> list[dict]:
-        results = cls.search(
+        results = self.search(
             query,
             limit,
         )
 
         table = Table(
-            title=f'Search: "{query}"',
+            title=f'Search: "{escape(query)}"',
             border_style="magenta",
         )
 
@@ -511,8 +842,8 @@ class YTDownloader:
         ):
             table.add_row(
                 str(index),
-                video["title"],
-                video["channel"],
+                escape(video["title"]),
+                escape(video["channel"]),
                 video["duration"],
                 video["views"],
             )
@@ -538,7 +869,7 @@ class YTDownloader:
 
         selected = results[index - 1]
 
-        console.print((f"[cyan]Selected:[/cyan] [bold]{selected['title']}[/bold]"))
+        console.print((f"[cyan]Selected:[/cyan] [bold]{escape(selected['title'])}[/bold]"))
 
         return self.download(
             selected["url"], compatible=compatible, max_height=max_height
@@ -562,7 +893,8 @@ class YTDownloader:
     ) -> list[Path]:
         return sorted(
             path
-            for path in self.audio_dir.iterdir()
+            # Anywhere in the folder: audio-only sites save straight into it.
+            for path in self.download_dir.rglob("*")
             if (path.is_file() and path.suffix.lower() in self.AUDIO_EXTENSIONS)
         )
 
@@ -602,7 +934,7 @@ class YTDownloader:
             table.add_row(
                 str(index),
                 media_type,
-                str(path.relative_to(self.download_dir)),
+                escape(str(path.relative_to(self.download_dir))),
                 format_size(path.stat().st_size),
             )
 
@@ -664,6 +996,11 @@ class YTDownloader:
                 console.print("[red]Cancelled.[/red]")
                 return
 
+        if videos:
+            # Forget what was downloaded, or batch and playlist runs would skip it.
+            for archive in self.download_dir.rglob(self.ARCHIVE_NAME):
+                archive.unlink()
+
         for path in files:
             path.unlink()
 
@@ -696,47 +1033,47 @@ class YTDownloader:
     def download_many(
         self,
         urls: list[str],
-        continue_on_error: bool = True,
         compatible: bool = False,
         max_height: int | None = None,
+        jobs: int = 1,
+        skip_downloaded: bool = True,
     ) -> list[Path]:
-        downloaded: list[Path] = []
-
         console.print(
             Panel.fit(
-                (f"[bold]{len(urls)} videos queued[/bold]"),
+                (f"[bold]{len(urls)} videos queued[/bold]"
+                 + (f" [dim]({jobs} at a time)[/dim]" if jobs > 1 else "")),
                 title="Batch Download",
                 border_style="blue",
             )
         )
 
-        for index, url in enumerate(
-            urls,
-            start=1,
-        ):
-            console.rule((f"[bold cyan]{index}/{len(urls)}[/bold cyan]"))
-
-            try:
-                path = self.download(
-                    url, compatible=compatible, max_height=max_height
-                )
-
-                downloaded.append(path)
-
-            except Exception as exc:
-                console.print((f"[red]Failed: {exc}[/red]"))
-
-                if not continue_on_error:
-                    raise
-
-        console.print(
-            (
-                "\n[green bold]"
-                "Batch complete"
-                "[/green bold]\n"
-                f"{len(downloaded)}/"
-                f"{len(urls)} downloaded"
-            )
+        template = str(self.download_dir / self._output_name(None))
+        downloaded, skipped, failed = self._download_entries(
+            [(url, template) for url in urls],
+            archive=self.download_dir / self.ARCHIVE_NAME if skip_downloaded else None,
+            jobs=jobs,
+            compatible=compatible,
+            max_height=max_height,
         )
 
+        summary = f"{len(downloaded)}/{len(urls)} downloaded"
+        if skipped:
+            summary += f", {skipped} already there"
+        if failed:
+            summary += f", {failed} failed"
+        console.print(f"\n[green bold]Batch complete[/green bold]\n{summary}")
+
         return downloaded
+
+
+def parse_browser(value: str | None) -> tuple | None:
+    """Turn 'chrome' or 'chrome:Profile 1' into yt-dlp's cookiesfrombrowser tuple."""
+    if not value or value.lower() == "none":
+        return None
+    browser, _, profile = value.partition(":")
+    browser = browser.strip().lower()
+    if browser not in SUPPORTED_BROWSERS:
+        raise ValueError(
+            f"Unsupported browser '{browser}'. Choose one of: {', '.join(sorted(SUPPORTED_BROWSERS))}."
+        )
+    return (browser, profile.strip() or None, None, None)

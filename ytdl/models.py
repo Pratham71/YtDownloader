@@ -8,6 +8,7 @@ class VideoInfo:
     duration_seconds: int
     views: int
     url: str
+    site: str = ""
 
     @property
     def duration(self) -> str:
